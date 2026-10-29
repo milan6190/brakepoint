@@ -112,7 +112,7 @@ class QueueApprover(Approver):
             "summary": redact(_banner(verdict)),
             "verdict": json.loads(redact(json.dumps(verdict.to_dict()))),
         }
-        (self.pending_dir / f"{request_id}.json").write_text(json.dumps(payload, indent=2))
+        _atomic_write(self.pending_dir / f"{request_id}.json", json.dumps(payload, indent=2))
         return request_id
 
     def request(self, verdict) -> ApprovalResult:
@@ -125,7 +125,11 @@ class QueueApprover(Approver):
         decision_file = self.decided_dir / f"{request_id}.json"
         while time.monotonic() < deadline:
             if decision_file.exists():
-                data = json.loads(decision_file.read_text())
+                try:
+                    data = json.loads(decision_file.read_text())
+                except ValueError:  # being written; read again on the next poll
+                    time.sleep(self.poll)
+                    continue
                 self._cleanup(request_id)
                 return ApprovalResult(data.get("decision") == "approve", f"queue:{data.get('by', '?')}", request_id)
             time.sleep(self.poll)
@@ -137,7 +141,7 @@ class QueueApprover(Approver):
             return False
         self.decided_dir.mkdir(parents=True, exist_ok=True)
         record = {"decision": "approve" if approve else "deny", "by": _user(), "at": time.time()}
-        (self.decided_dir / f"{request_id}.json").write_text(json.dumps(record))
+        _atomic_write(self.decided_dir / f"{request_id}.json", json.dumps(record))
         return True
 
     def pending(self) -> list[dict]:
@@ -167,6 +171,13 @@ def build_approver(policy) -> Approver:
     if backend == "queue":
         return QueueApprover(policy.queue_dir, policy.approval_timeout)
     return DenyApprover()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a temp file and rename, so readers never see a half-written file."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def _banner(verdict) -> str:
