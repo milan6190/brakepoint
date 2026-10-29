@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "brakepoint",
+      "args": ["mcp-proxy", "--name", "postgres", "--", "npx", "-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/app"]
+    }
+  }
+}

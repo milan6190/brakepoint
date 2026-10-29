@@ -1,0 +1,12 @@
+# A relaxed policy for a laptop sandbox with no production access.
+version: 1
+defaults:
+  critical: approve
+  high: approve
+  medium: allow
+rules:
+  BP-GIT-002: log     # discarding local changes is fine here
+  BP-EXEC-003: allow  # sudo inside the dev container
+allow:
+  - 'rm -rf (\./)?(node_modules|dist|build|\.next|\.venv|__pycache__|\.pytest_cache)/?'
+  - 'docker compose down -v'

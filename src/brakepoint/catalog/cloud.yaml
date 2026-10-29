@@ -1,0 +1,223 @@
+# Brakepoint catalog: AWS, Google Cloud, and Azure CLIs.
+# Each provider has specific critical rules plus a generic "delete-like verb"
+# catch-all at high severity. When several rules match, the highest severity wins.
+
+rules:
+  # ------------------------------------------------------------ AWS
+  - id: BP-AWS-001
+    title: Delete an AWS database, table, or bucket
+    category: data-destruction
+    platform: aws
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+rds\s+delete-db-(?:instance|cluster)\b'
+      - '\baws\s+dynamodb\s+delete-table\b'
+      - '\baws\s+s3\s+rb\b'
+      - '\baws\s+s3\s+rm\b[^|;&]*--recursive'
+      - '\baws\s+s3api\s+delete-bucket\b'
+      - '\baws\s+(?:redshift|docdb|neptune|elasticache|opensearch|es)\s+delete-'
+      - '\baws\s+ec2\s+delete-volume\b'
+      - '\baws\s+efs\s+delete-file-system\b'
+    why: Removes a datastore. Deleting a database without a final snapshot leaves nothing to restore.
+    safer: Take a snapshot, enable deletion protection, and have a human delete it.
+
+  - id: BP-AWS-002
+    title: Delete AWS backups, snapshots, or encryption keys
+    category: backup-destruction
+    platform: aws
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+backup\s+delete-(?:recovery-point|backup-vault|backup-plan)\b'
+      - '\baws\s+rds\s+delete-db-(?:cluster-)?snapshot\b'
+      - '\baws\s+ec2\s+delete-snapshot\b'
+      - '\baws\s+kms\s+(?:schedule-key-deletion|disable-key)\b'
+      - '\baws\s+s3api\s+(?:put-bucket-versioning\b[^|;&]*Suspended|delete-object\b[^|;&]*--version-id)'
+      - '--skip-final-snapshot\b'
+      - '--delete-automated-backups\b'
+    why: Backups and keys are the undo button. Losing them turns any later mistake into permanent data loss.
+    safer: Never let an agent touch backups or keys. A human should own retention.
+
+  - id: BP-AWS-003
+    title: Tear down AWS infrastructure
+    category: availability
+    platform: aws
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+cloudformation\s+delete-stack\b'
+      - '\baws\s+ec2\s+terminate-instances\b'
+      - '\baws\s+eks\s+delete-cluster\b'
+      - '\baws\s+organizations\s+(?:close-account|remove-account-from-organization)\b'
+      - '\baws\s+route53\s+delete-hosted-zone\b'
+    why: Destroys running infrastructure or entire accounts.
+    safer: Stop rather than terminate, or change the IaC and let the pipeline apply it.
+
+  - id: BP-AWS-004
+    title: AWS IAM privilege change or credential minting
+    category: privilege-escalation
+    platform: aws
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+iam\s+(?:create-access-key|create-login-profile|update-login-profile|create-user|attach-\w+-policy|put-\w+-policy|add-user-to-group|update-assume-role-policy|create-policy-version)\b'
+      - '\baws\s+sts\s+(?:assume-role|get-session-token|get-federation-token)\b'
+    why: Creates credentials or widens permissions, which outlives the task that needed them.
+    safer: Request a scoped role through your normal access process.
+
+  - id: BP-AWS-005
+    title: Grant AWS administrator access
+    category: privilege-escalation
+    platform: aws
+    severity: critical
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+iam\s+attach-\w+-policy\b[^|;&]*AdministratorAccess'
+      - '\baws\s+iam\s+put-\w+-policy\b[^|;&]*"Action"\s*:\s*"\*"'
+      - '\baws\s+s3api\s+(?:put-public-access-block\b[^|;&]*=false|put-bucket-acl\b[^|;&]*public-read)'
+    why: Grants full control of the account, or makes data public.
+    safer: Grant the specific actions on the specific resources required.
+
+  - id: BP-AWS-099
+    title: Other AWS delete, terminate, or purge operation
+    category: data-destruction
+    platform: aws
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\baws\s+[\w-]+\s+(?:delete|remove|terminate|purge|deregister|disable|revoke)-[\w-]+'
+      - '\baws\s+[\w-]+\s+batch-delete-[\w-]+'
+    why: A destructive AWS API call.
+    safer: Review the target and have a human run it.
+
+  # ------------------------------------------------------------ Google Cloud
+  - id: BP-GCP-001
+    title: Delete a Google Cloud project, database, or bucket
+    category: data-destruction
+    platform: gcp
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\bgcloud\s+(?:\w+\s+)?projects\s+delete\b'
+      - '\bgcloud\s+(?:\w+\s+)?sql\s+(?:instances|databases)\s+delete\b'
+      - '\bgcloud\s+(?:\w+\s+)?spanner\s+(?:instances|databases)\s+delete\b'
+      - '\bgcloud\s+(?:\w+\s+)?(?:firestore|bigtable)\s+(?:databases|instances)\s+delete\b'
+      - '\bgcloud\s+storage\s+(?:buckets\s+delete|rm\b[^|;&]*(?:--recursive|\s-r\b))'
+      - '\bgsutil\s+(?:-\S+\s+)*(?:rb\b|rm\b[^|;&]*\s-[a-zA-Z]*r)'
+      - '\bgcloud\s+(?:\w+\s+)?compute\s+disks\s+delete\b'
+    why: Removes a project, datastore, or bucket. Deleted projects take every resource in them along.
+    safer: Snapshot or export first and have the owner delete it.
+
+  - id: BP-GCP-002
+    title: Delete Google Cloud backups or keys
+    category: backup-destruction
+    platform: gcp
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\bgcloud\s+(?:\w+\s+)?sql\s+backups\s+delete\b'
+      - '\bgcloud\s+(?:\w+\s+)?compute\s+snapshots\s+delete\b'
+      - '\bgcloud\s+(?:\w+\s+)?kms\s+keys\s+versions\s+(?:destroy|disable)\b'
+      - '\bgcloud\s+(?:\w+\s+)?(?:firestore|spanner)\s+backups\s+delete\b'
+    why: Removes the backups and keys you would need to recover.
+    safer: Leave retention to a human-owned policy.
+
+  - id: BP-GCP-003
+    title: Grant owner/editor or mint service account keys
+    category: privilege-escalation
+    platform: gcp
+    severity: critical
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\badd-iam-policy-binding\b[^|;&]*roles/(?:owner|editor|iam\.securityAdmin|resourcemanager\.\w*Admin)'
+      - '\bgcloud\s+(?:\w+\s+)?iam\s+service-accounts\s+keys\s+create\b'
+      - '\bset-iam-policy\b'
+      - '\badd-iam-policy-binding\b[^|;&]*(?:allUsers|allAuthenticatedUsers)'
+    why: Grants broad control, makes resources public, or creates a long-lived credential.
+    safer: Use workload identity and grant a narrow predefined role.
+
+  - id: BP-GCP-099
+    title: Other Google Cloud delete operation
+    category: data-destruction
+    platform: gcp
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\bgcloud\b[^|;&]*\s(?:delete|destroy|purge|remove-iam-policy-binding|disable)(?:\s|$)'
+    why: A destructive Google Cloud operation.
+    safer: Review the target and have a human run it.
+
+  # ------------------------------------------------------------ Azure
+  - id: BP-AZ-001
+    title: Delete an Azure resource group, database, or storage account
+    category: data-destruction
+    platform: azure
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\baz\s+group\s+delete\b'
+      - '\baz\s+(?:sql|mysql|postgres|cosmosdb)\b[^|;&]*\sdelete\b'
+      - '\baz\s+storage\s+(?:account|container|share|fs)\s+delete\b'
+      - '\baz\s+storage\s+blob\s+delete-batch\b'
+      - '\bRemove-AzResourceGroup\b'
+      - '\baz\s+databricks\s+workspace\s+delete\b'
+      - '\baz\s+(?:cognitiveservices|ml)\s+[^|;&]*\sdelete\b'
+    why: Deleting a resource group deletes every resource inside it.
+    safer: Add a resource lock and have the owner delete it.
+
+  - id: BP-AZ-002
+    title: Purge Azure Key Vault, backups, or locks
+    category: backup-destruction
+    platform: azure
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\baz\s+keyvault\s+(?:purge|delete)\b'
+      - '\baz\s+keyvault\s+(?:secret|key|certificate)\s+purge\b'
+      - '\baz\s+backup\s+(?:vault\s+delete|protection\s+disable)\b'
+      - '\baz\s+lock\s+delete\b'
+      - '--enable-purge-protection\s+false'
+    why: Purging bypasses soft delete, and deleting locks removes the guard against accidental deletion.
+    safer: Leave keys, backups, and locks to a human owner.
+
+  - id: BP-AZ-003
+    title: Grant Azure Owner or mint service principal credentials
+    category: privilege-escalation
+    platform: azure
+    severity: critical
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\baz\s+role\s+assignment\s+create\b[^|;&]*(?:"?Owner"?|User Access Administrator|"?Contributor"?)(?:\s|$|")'
+      - '\baz\s+ad\s+sp\s+(?:create-for-rbac|credential\s+reset)\b'
+      - '\baz\s+ad\s+app\s+credential\s+reset\b'
+      - '\baz\s+storage\s+account\s+update\b[^|;&]*--(?:allow-blob-public-access\s+true|public-network-access\s+Enabled)'
+      - '\baz\s+cognitiveservices\s+account\s+update\b[^|;&]*--public-network-access\s+Enabled'
+    why: Grants broad control, creates long-lived secrets, or opens private resources to the internet.
+    safer: Use managed identity with a narrow role; keep private endpoints in place.
+
+  - id: BP-AZ-099
+    title: Other Azure delete operation
+    category: data-destruction
+    platform: azure
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\baz\s[^|;&]*\s(?:delete|purge|delete-batch|remove)(?:\s|$)'
+      - '\bRemove-Az\w+\b'
+    why: A destructive Azure operation.
+    safer: Review the target and have a human run it.

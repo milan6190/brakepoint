@@ -1,0 +1,183 @@
+# Brakepoint catalog: databases, warehouses, and lakehouses.
+# SQL rules match anywhere in the action text, so they also catch SQL passed
+# through psql -c, mysql -e, sqlcmd -Q, databricks/bq CLIs, or an MCP tool's
+# arguments.
+
+rules:
+  - id: BP-SQL-001
+    title: Drop a database, schema, catalog, or table
+    category: data-destruction
+    platform: sql
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bdrop\s+(?:database|schema|catalog|table|keyspace)\b'
+    why: Removes the object and its data. Restores depend on backups that may not exist or may be gone too.
+    safer: Rename the object (ALTER ... RENAME) and let a human drop it after review.
+    refs:
+      - https://oecd.ai/en/incidents/2025-07-19-1eb1
+
+  - id: BP-SQL-002
+    title: Truncate a table
+    category: data-destruction
+    platform: sql
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\btruncate\s+table\b'
+      - '(?i)(?:^|[;"''(]\s*)truncate\s+[\w."`\[\]]+\s*(?:;|$|["'')])'
+    why: Removes every row with no WHERE clause and, in most engines, no row-level undo.
+    safer: Copy the table first (CREATE TABLE ... AS SELECT) and have a human run the truncate.
+
+  - id: BP-SQL-003
+    title: DELETE without a WHERE clause
+    category: data-destruction
+    platform: sql
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bdelete\s+from\s+[\w."`\[\]]+\s*(?:;|$|["'')])'
+      - '(?i)\bdelete\s+from\s+[\w."`\[\]]+\s+where\s+(?:1\s*=\s*1|true)\b'
+    why: Deletes every row in the table.
+    safer: Add a WHERE clause, and run a SELECT COUNT(*) with the same predicate first.
+
+  - id: BP-SQL-004
+    title: UPDATE without a WHERE clause
+    category: data-destruction
+    platform: sql
+    severity: high
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bupdate\s+[\w."`\[\]]+\s+set\s+(?:(?!\bwhere\b)[^;])*(?:;|$)'
+    unless:
+      - '(?i)\bon\s+conflict\b'
+      - '(?i)\bon\s+duplicate\s+key\s+update\b'
+    why: Overwrites the column for every row; the previous values are lost.
+    safer: Add a WHERE clause, and preview the affected rows with a SELECT first.
+
+  - id: BP-SQL-005
+    title: Drop a column, constraint, or index
+    category: data-destruction
+    platform: sql
+    severity: high
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\balter\s+table\b[^;]*\bdrop\s+(?:column|constraint|partition)\b'
+      - '(?i)\bdrop\s+(?:index|view|materialized\s+view|function|procedure|sequence|trigger)\b'
+    why: Dropping a column destroys its data; dropping constraints or indexes can silently break integrity or performance.
+    safer: Ship the change as a reviewed migration.
+
+  - id: BP-SQL-006
+    title: Grant broad privileges or create superusers
+    category: privilege-escalation
+    platform: sql
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bgrant\s+all\b'
+      - '(?i)\balter\s+(?:role|user)\b[^;]*\bsuperuser\b'
+      - '(?i)\bcreate\s+(?:role|user)\b[^;]*\bsuperuser\b'
+      - '(?i)\bgrant\b[^;]*\bto\s+(?:public|`?account users`?)\b'
+      - '(?i)\bdrop\s+(?:user|role|login)\b'
+    why: Widens who can read or change data, or removes access that was deliberately granted.
+    safer: Grant the narrowest privilege to a specific principal, through a reviewed change.
+
+  - id: BP-SQL-007
+    title: Database-wide wipe (NoSQL and caches)
+    category: data-destruction
+    platform: nosql
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bflushall\b'
+      - '(?i)\bflushdb\b'
+      - '\.dropDatabase\s*\('
+      - '\.drop\s*\(\s*\)'
+      - '\.(?:deleteMany|remove)\s*\(\s*\{\s*\}\s*\)'
+      - '(?i)\bdelete_by_query\b[^;]*match_all'
+      - '(?i)-X\s*DELETE\s+["'']?https?://[^/\s]+:9200/[\w*,-]+/?["'']?(?:\s|$)'
+    why: Wipes an entire database, collection, cache, or search index.
+    safer: Target specific keys or documents with a filter.
+
+  - id: BP-SQL-008
+    title: Disable migration or safety checks
+    category: data-destruction
+    platform: sql
+    severity: high
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bSET\s+FOREIGN_KEY_CHECKS\s*=\s*0\b'
+      - '(?i)\bsession_replication_role\s*=\s*replica\b'
+      - '\b(?:rails|rake)\s+db:(?:drop|reset|schema:load)\b'
+      - '\bprisma\s+(?:migrate\s+reset|db\s+push\b[^|;&]*--(?:force-reset|accept-data-loss))'
+      - '\b(?:python\d?\s+)?manage\.py\s+(?:flush|reset_db)\b'
+      - '\bsupabase\s+db\s+reset\b'
+      - '\balembic\s+downgrade\s+base\b'
+    why: These commands reset or rebuild a database and discard its data.
+    safer: Run against a disposable local database, never a shared or production one.
+
+  # ------------------------------------------------------------ lakehouse
+  - id: BP-LH-001
+    title: Destroy Delta Lake time travel (VACUUM RETAIN 0)
+    category: backup-destruction
+    platform: databricks
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool, sql]
+    patterns:
+      - '(?i)\bvacuum\b[^;]*\bretain\s+0\s+hours\b'
+      - '(?i)retentionDurationCheck\.enabled\s*["'']?\s*[=,]\s*["'']?false'
+      - '(?i)delta\.deletedFileRetentionDuration\s*["'']?\s*=\s*["'']?interval\s+0\b'
+    why: Deletes the older file versions that Delta time travel uses as an undo button.
+    safer: Keep the default retention (7 days) so RESTORE remains possible.
+
+  - id: BP-LH-002
+    title: Delete Databricks workspace objects, files, or Unity Catalog assets
+    category: data-destruction
+    platform: databricks
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bdatabricks\s+workspace\s+delete\b[^|;&]*(?:--recursive|\s-r\b)'
+      - '\bdatabricks\s+fs\s+rm\b[^|;&]*(?:--recursive|\s-r\b)'
+      - '\bdatabricks\s+(?:catalogs|schemas|tables|volumes|external-locations|storage-credentials|metastores)\s+delete\b'
+      - '\bdbutils\.fs\.rm\s*\([^)]*,\s*(?:True|recurse\s*=\s*True)'
+    why: Removes notebooks, data files, or governance objects that other teams depend on.
+    safer: Move or rename the object and let its owner delete it.
+
+  - id: BP-LH-003
+    title: Other destructive Databricks CLI operation
+    category: availability
+    platform: databricks
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell]
+    patterns:
+      - '\bdatabricks\s+(?:\S+\s+)*(?:delete|permanent-delete|purge|remove)\b'
+      - '\bdatabricks\s+(?:tokens|token-management)\s+create\b'
+      - '\bdatabricks\s+(?:grants|permissions)\s+(?:update|set)\b'
+    why: Deletes jobs, clusters, or tokens, or changes who can access workspace assets.
+    safer: Ask the asset owner to make the change.
+
+  # ------------------------------------------------------------ warehouses
+  - id: BP-WH-001
+    title: Delete BigQuery or Snowflake data
+    category: data-destruction
+    platform: gcp
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bbq\s+(?:--\S+\s+)*rm\b'
+      - '\bsnow\s+(?:object\s+)?drop\b'
+    why: Removes datasets or tables; recovery windows are short and not guaranteed.
+    safer: Copy the table or dataset first and let its owner delete the original.

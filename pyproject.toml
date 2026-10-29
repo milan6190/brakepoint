@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brakepoint"
+dynamic = ["version"]
+description = "A breakpoint for irreversible AI agent actions: stop destructive tool calls for human approval, enforced outside the model."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Milankumar Rana" }]
+keywords = ["ai-agents", "agent-security", "mcp", "guardrails", "owasp", "llm-security", "claude-code"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+brakepoint = "brakepoint.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/milan6190/brakepoint"
+Issues = "https://github.com/milan6190/brakepoint/issues"
+
+[tool.hatch.version]
+path = "src/brakepoint/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brakepoint"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE", "ISC"]
+ignore = ["E501"]  # the formatter handles line length; long regexes and URLs stay on one line
+# Broad excepts are deliberate: Brakepoint fails closed on any internal error.
+per-file-ignores = { "src/brakepoint/integrations/*.py" = ["BLE001"], "src/brakepoint/audit.py" = ["BLE001"], "src/brakepoint/approval.py" = ["SIM115"] }

@@ -1,0 +1,202 @@
+# Brakepoint catalog: Kubernetes, infrastructure as code, containers,
+# PaaS platforms, and source hosting.
+
+rules:
+  # ------------------------------------------------------------ Kubernetes
+  - id: BP-K8S-001
+    title: Delete a namespace, persistent volume, or everything of a kind
+    category: data-destruction
+    platform: kubernetes
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\b(?:kubectl|oc)\s+delete\s+(?:\S+\s+)*(?:ns|namespaces?|projects?)\b'
+      - '\b(?:kubectl|oc)\s+delete\s+(?:\S+\s+)*(?:pvc|pv|persistentvolumes?|persistentvolumeclaims?|volumesnapshots?)\b'
+      - '\b(?:kubectl|oc)\s+delete\b[^|;&]*\s--all(?:\s|$|=)'
+      - '\b(?:kubectl|oc)\s+delete\s+(?:\S+\s+)*(?:crd|customresourcedefinitions?)\b'
+    why: Deleting a namespace deletes everything in it; deleting PVs can delete the underlying disks.
+    safer: Scale the workload down and let a human remove it.
+
+  - id: BP-K8S-002
+    title: Grant cluster-admin or create privileged access
+    category: privilege-escalation
+    platform: kubernetes
+    severity: critical
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\bkubectl\s+create\s+(?:cluster)?rolebinding\b[^|;&]*cluster-admin'
+      - '\bkubectl\s+(?:create\s+token|create\s+serviceaccount)\b'
+      - '"privileged"\s*:\s*true'
+      - 'privileged:\s*true'
+      - 'hostPID:\s*true'
+      - '/var/run/docker\.sock'
+      - '/var/run/secrets/kubernetes\.io/serviceaccount/token'
+    why: Pod-to-cluster-admin is a well-known lateral movement path; privileged pods and socket mounts escape container isolation.
+    safer: Use a namespaced role with the minimum verbs required.
+    refs:
+      - https://en.wikipedia.org/wiki/OpenAI_rogue_agent_breach_of_Hugging_Face
+
+  - id: BP-K8S-099
+    title: Other Kubernetes delete, drain, or uninstall
+    category: availability
+    platform: kubernetes
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\b(?:kubectl|oc)\s+(?:delete|drain|replace\s+--force)\b'
+      - '\bhelm\s+(?:uninstall|delete|rollback)\b'
+      - '\bkubectl\s+scale\b[^|;&]*--replicas[=\s]+0\b'
+    why: Removes or disrupts running workloads.
+    safer: Change the manifest in git and let the deployment pipeline apply it.
+
+  # ------------------------------------------------------------ IaC
+  - id: BP-IAC-001
+    title: Destroy infrastructure as code
+    category: availability
+    platform: iac
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\b(?:terraform|tofu|terragrunt)\s+(?:\S+\s+)*destroy\b'
+      - '\b(?:terraform|tofu)\s+apply\b[^|;&]*-destroy\b'
+      - '\bpulumi\s+destroy\b'
+      - '\bcdk\s+destroy\b'
+      - '\b(?:sam|serverless|sls)\s+(?:delete|remove)\b'
+    why: Tears down every resource the configuration manages, including databases and their data.
+    safer: Remove the specific resource from code and review the plan.
+
+  - id: BP-IAC-002
+    title: Apply infrastructure changes without review
+    category: availability
+    platform: iac
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell]
+    patterns:
+      - '\b(?:terraform|tofu|terragrunt)\s+(?:\S+\s+)*apply\b[^|;&]*-auto-approve'
+      - '\bpulumi\s+up\b[^|;&]*(?:--yes|\s-y\b)'
+      - '\bcdk\s+deploy\b[^|;&]*--require-approval\s+never'
+      - '\b(?:terraform|tofu)\s+state\s+(?:rm|push|mv)\b'
+      - '\b(?:terraform|tofu)\s+(?:import|taint|force-unlock)\b'
+    why: Applies a plan nobody has read, or edits state so Terraform loses track of real resources.
+    safer: Run plan, show the diff, and have a human apply it.
+
+  # ------------------------------------------------------------ containers
+  - id: BP-CTR-001
+    title: Delete container volumes
+    category: data-destruction
+    platform: docker
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bdocker\s+volume\s+(?:rm|prune)\b'
+      - '\bdocker\s+system\s+prune\b[^|;&]*--volumes'
+      - '\bdocker[\s-]compose\s+(?:\S+\s+)*down\b[^|;&]*(?:\s-v\b|--volumes)'
+      - '\bpodman\s+volume\s+(?:rm|prune)\b'
+    why: Named volumes hold database files; removing them deletes the data.
+    safer: Stop containers with docker compose down (no -v).
+
+  - id: BP-CTR-002
+    title: Privileged container or host mount
+    category: sandbox-escape
+    platform: docker
+    severity: high
+    reversibility: reversible
+    kinds: [shell]
+    patterns:
+      - '\bdocker\s+run\b[^|;&]*--privileged'
+      - '\bdocker\s+run\b[^|;&]*(?:-v|--volume|--mount)\s*[= ]\s*(?:type=bind,\s*source=)?/(?::|,|\s)'
+      - '\bdocker\s+run\b[^|;&]*--(?:pid|net|network|ipc)[= ]host\b'
+      - '\bnsenter\b'
+    why: Gives the container control of the host, defeating the sandbox.
+    safer: Run unprivileged with only the directories the task needs mounted.
+
+  # ------------------------------------------------------------ PaaS
+  - id: BP-PAAS-001
+    title: Delete a PaaS volume, database, or app
+    category: data-destruction
+    platform: paas
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\bvolumeDelete\b'
+      - '\b(?:serviceDelete|projectDelete|environmentDelete|databaseDelete|deploymentRemove)\b'
+      - '\brailway\s+(?:down|delete|volume\s+delete)\b'
+      - '\bheroku\s+(?:apps:destroy|pg:reset|addons:destroy)\b'
+      - '\b(?:fly|flyctl)\s+(?:apps\s+destroy|volumes\s+(?:destroy|delete)|postgres\s+destroy)\b'
+      - '\brender\s+(?:services|disks)\s+delete\b'
+      - '\bvercel\s+(?:remove|rm|project\s+rm)\b'
+      - '\bnetlify\s+sites:delete\b'
+      - '\bneonctl\s+(?:projects|branches|databases)\s+delete\b'
+      - '\bplanetscale\s+(?:database|branch)\s+delete\b|\bpscale\s+(?:database|branch)\s+delete\b'
+    why: On several platforms deleting a volume or service also deletes the backups stored with it, so there is nothing left to restore.
+    safer: Never give an agent a token that can delete production resources. Use an environment-scoped token.
+    refs:
+      - https://oecd.ai/en/incidents/2026-04-27-6153
+      - https://www.techradar.com/pro/it-took-9-seconds-tech-founder-outlines-how-rogue-claude-powered-ai-tool-wiped-entire-company-database-and-backups-but-says-theres-no-such-thing-as-bad-publicity
+
+  - id: BP-HTTP-001
+    title: Raw HTTP DELETE or destructive GraphQL mutation
+    category: data-destruction
+    platform: http
+    severity: high
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\b(?:curl|http|https|xh)\b[^|;&]*(?:-X\s*|--request\s+)["'']?DELETE\b'
+      - '\b(?:Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b[^|;&]*-Method\s+Delete\b'
+      - '\bmutation\b[^|;&]*\b\w*(?:[dD]elete|[dD]estroy|[pP]urge|[rR]emove|[dD]rop|[wW]ipe)\w*\s*\('
+      - '\bhttpx?\.(?:delete)\s*\('
+      - '\brequests\.delete\s*\('
+    why: Calls an API's delete operation directly, bypassing whatever confirmations the official tooling has.
+    safer: Use the provider's CLI or console, where deletes ask for confirmation.
+
+  # ------------------------------------------------------------ source hosting
+  - id: BP-SCM-001
+    title: Delete a repository or make it public
+    category: exposure
+    platform: github
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, tool]
+    patterns:
+      - '\bgh\s+repo\s+delete\b'
+      - '\bgh\s+repo\s+(?:edit|create)\b[^|;&]*--visibility[=\s]+public'
+      - '\bgh\s+api\b[^|;&]*-X\s*DELETE\b[^|;&]*/repos/'
+      - '\bglab\s+repo\s+delete\b'
+    why: Deleting a repository loses issues and history; publishing a private one exposes code and secrets.
+    safer: Archive the repository instead, and let an owner change visibility.
+
+  - id: BP-SCM-002
+    title: Delete releases, workflows, or secrets
+    category: availability
+    platform: github
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell, tool]
+    patterns:
+      - '\bgh\s+(?:release|secret|variable|cache|run|label|ruleset)\s+delete\b'
+      - '\bgh\s+api\b[^|;&]*-X\s*DELETE\b'
+      - '\bgh\s+(?:api\b[^|;&]*branches/[^/\s]+/protection\b[^|;&]*-X\s*DELETE|ruleset\s+delete)'
+    why: Removes release artifacts, CI configuration, or branch protections.
+    safer: Ask a maintainer to make the change.
+
+  - id: BP-SCM-003
+    title: Post publicly on someone's behalf
+    category: outbound-action
+    platform: github
+    severity: medium
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bgh\s+(?:pr|issue)\s+(?:comment|create|close|merge|review)\b'
+      - '\bgh\s+pr\s+merge\b'
+      - '\b(?:sendmail|mailx?|mutt)\s'
+    why: Publishes content under a person's name; once seen, it cannot be unseen.
+    safer: Draft the text and let the person post it.

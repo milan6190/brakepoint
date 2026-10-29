@@ -1,0 +1,16 @@
+# A strict policy for agents that can reach production credentials.
+version: 1
+defaults:
+  critical: deny      # nothing irreversible, ever; a human runs it
+  high: approve
+  medium: approve
+  unmatched: allow
+protected:
+  markers: [prod, production, prd, live, primary]
+  protected_action: deny
+approval:
+  backend: queue      # approve from another terminal: brakepoint pending / brakepoint approve <id>
+  timeout_seconds: 600
+  queue_dir: /var/lib/brakepoint/queue   # make this unwritable by the agent's OS user
+audit:
+  path: /var/log/brakepoint/audit.jsonl

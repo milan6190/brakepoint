@@ -1,0 +1,102 @@
+# Brakepoint catalog: agent tool calls (MCP tools and framework tools).
+#
+# Tool rules with `field: name` look only at the tool's name, after it is
+# normalised to snake_case words (sendEmail -> send_email,
+# mcp__gmail__batchDelete -> mcp gmail batch_delete). They are deliberately
+# verb-based so they work on servers nobody has catalogued yet.
+
+rules:
+  - id: BP-TOOL-001
+    title: Tool that deletes or destroys
+    category: data-destruction
+    platform: mcp
+    severity: high
+    reversibility: irreversible
+    kinds: [tool]
+    field: name
+    patterns:
+      - '(?:^|[_\s])(?:delete|drop|destroy|purge|wipe|truncate|erase|remove|terminate|trash|empty|clear|reset|overwrite)(?:s|d|ed|es)?(?:$|[_\s])'
+    unless:
+      - '(?:^|[_\s])(?:list|get|read|search|fetch|describe|count|preview|draft|find|show|view|lookup|estimate|quote)(?:$|[_\s])'
+    why: The tool name says it destroys something. Many MCP servers expose these with no confirmation of their own.
+    safer: Have a human approve each call, or remove the tool from the agent's tool list.
+    refs:
+      - https://techcrunch.com/2026/03/18/meta-is-having-trouble-with-rogue-ai-agents
+
+  - id: BP-TOOL-002
+    title: Tool that sends, posts, or publishes
+    category: outbound-action
+    platform: mcp
+    severity: high
+    reversibility: irreversible
+    kinds: [tool]
+    field: name
+    patterns:
+      - '(?:^|[_\s])(?:send|post|publish|reply|forward|share|tweet|broadcast|notify|comment|announce|dm|message|email|sms|invite|submit)(?:s|ed|es)?(?:$|[_\s])'
+    unless:
+      - '(?:^|[_\s])(?:draft|preview|list|get|read|search|fetch)(?:$|[_\s])'
+    why: Outbound messages act in someone's name and cannot be recalled. In a reported Meta incident, an agent posted an answer to an internal forum without asking, which led to a Sev 1 data exposure.
+    safer: Create a draft and let the person send it.
+    refs:
+      - https://techcrunch.com/2026/03/18/meta-is-having-trouble-with-rogue-ai-agents
+
+  - id: BP-TOOL-003
+    title: Tool that moves money or commits to a purchase
+    category: financial
+    platform: mcp
+    severity: critical
+    reversibility: irreversible
+    kinds: [tool]
+    field: name
+    patterns:
+      - '(?:^|[_\s])(?:refund|pay|payment|payout|transfer|charge|withdraw|purchase|buy|order|checkout|invoice|credit|debit|wire|swap|trade|sell|subscribe|tip)(?:s|ed|es|ing)?(?:$|[_\s])'
+    unless:
+      - '(?:^|[_\s])(?:list|get|read|search|fetch|describe|count|preview|draft|find|show|view|lookup|estimate|quote)(?:$|[_\s])'
+    why: Financial actions are hard or impossible to reverse. In one reported case, a support bot approved refunds that policy didn't allow in exchange for promises of good reviews.
+    safer: Require human approval for every financial action, with amount limits enforced by the backend.
+    refs:
+      - https://lieu.house.gov/media-center/in-the-news/are-ai-agents-going-rogue-heres-what-business-leaders-should-know
+
+  - id: BP-TOOL-004
+    title: Tool that changes access or permissions
+    category: privilege-escalation
+    platform: mcp
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [tool]
+    field: name
+    patterns:
+      - '(?:^|[_\s])(?:grant|revoke|set_permissions?|update_permissions?|add_member|remove_member|add_collaborator|make_public|set_visibility|set_acl|update_role|assign_role|create_token|create_api_key|create_key|rotate_key)(?:s|ed)?(?:$|[_\s])'
+    unless:
+      - '(?:^|[_\s])(?:list|get|read|search|fetch|describe|count|preview|draft|find|show|view|lookup|estimate|quote)(?:$|[_\s])'
+    why: Changes who can see or do what; the effect outlives the task.
+    safer: Route access changes through your normal approval process.
+
+  - id: BP-TOOL-005
+    title: Tool that runs arbitrary code or shell commands
+    category: code-execution
+    platform: mcp
+    severity: medium
+    reversibility: irreversible
+    kinds: [tool]
+    field: name
+    patterns:
+      - '(?:^|[_\s])(?:exec|execute|run_command|run_shell|shell|bash|terminal|eval|run_code|run_script|run_sql|query_write|execute_sql)(?:$|[_\s])'
+    why: The tool runs whatever the agent writes. Brakepoint still checks the arguments against the shell and SQL rules.
+    safer: Prefer narrow tools that do one thing.
+
+  - id: BP-TOOL-006
+    title: Bulk operation in tool arguments
+    category: data-destruction
+    platform: mcp
+    severity: high
+    reversibility: irreversible
+    kinds: [tool]
+    patterns:
+      - '"(?:all|recursive|force|purge|permanent|hard_delete|skip_confirmation|confirm)"\s*:\s*true'
+      - '"(?:query|filter|where)"\s*:\s*"(?:\*|in:anywhere|label:inbox|)"'
+      - '"ids?"\s*:\s*\[(?:\s*"[^"]*"\s*,){49,}'
+    why: A flag or filter that widens the call to everything, or a batch of 50+ items, multiplies the damage of one mistake. An agent at Meta reportedly bulk-deleted a safety director's inbox after she told it to confirm first.
+    safer: Act on a small, explicit list and confirm the count with a human.
+    refs:
+      - https://fortune.com/2026/03/27/rogue-ai-agents-autonomous-safety

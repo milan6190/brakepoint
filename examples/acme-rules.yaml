@@ -1,0 +1,13 @@
+# Example of a company-specific catalog, loaded via `catalogs:` in the policy.
+rules:
+  - id: BP-ACME-001
+    title: Run the billing backfill script
+    category: financial
+    platform: acme
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bscripts/billing_backfill\.py\b'
+    why: Re-issues invoices to customers.
+    safer: Ask the billing on-call to run it.

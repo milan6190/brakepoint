@@ -1,0 +1,273 @@
+# Brakepoint destructive-action catalog: filesystem, git, code execution,
+# credentials, and self-protection rules.
+#
+# Schema (see docs/CATALOG_SCHEMA.md):
+#   id           stable identifier, BP-<AREA>-<NNN>
+#   title        short human description
+#   category     data-destruction | backup-destruction | credential-access |
+#                privilege-escalation | exposure | sandbox-escape |
+#                code-execution | outbound-action | financial | self-tamper |
+#                history-rewrite | availability
+#   platform     what the rule targets (shell, git, sql, aws, ...)
+#   severity     critical | high | medium
+#   reversibility irreversible | hard-to-reverse | reversible
+#   kinds        which action kinds the rule applies to (shell, tool, file, url)
+#   field        text (default) or name (tool name only)
+#   patterns     Python regexes; any match triggers the rule
+#   unless       regexes that cancel a match in the same command segment
+#   locked       true = always denied; policy files cannot relax it
+#   why / safer  explanation and the safer alternative shown to humans and agents
+
+rules:
+  # ------------------------------------------------------------ filesystem
+  - id: BP-FS-001
+    title: Recursive delete of root, home, or a wildcard
+    category: data-destruction
+    platform: shell
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\brm\s+(?:-\S+\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(?:-\S+\s+)*(?:/|/\*|~/?|~/\*|\$HOME/?|\$\{HOME\}/?|\*|\.\.?/?)(?:\s|$)'
+      - '\brm\s+(?:-\S+\s+)*--recursive\s+(?:-\S+\s+)*(?:/|/\*|~/?|\$HOME/?|\*|\.\.?/?)(?:\s|$)'
+      - '--no-preserve-root'
+    why: Deletes an entire filesystem tree with no undo.
+    safer: Delete a specific, named path, or move it to a trash folder first.
+
+  - id: BP-FS-002
+    title: Recursive delete
+    category: data-destruction
+    platform: shell
+    severity: high
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\brm\s+(?:-\S+\s+)*-[a-zA-Z]*[rR]'
+      - '\brm\s+(?:\S+\s+)*--recursive\b'
+      - '\brmdir\s+/s\b'
+      - '\bRemove-Item\b[^|;&]*-Recurse'
+    unless:
+      - '\bgit\s+rm\b'
+    why: Recursive deletes bypass the trash and cannot be undone.
+    safer: Delete named files explicitly, or move the directory aside (mv dir dir.bak).
+
+  - id: BP-FS-003
+    title: Bulk delete with find
+    category: data-destruction
+    platform: shell
+    severity: high
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bfind\b[^|;&]*\s-delete\b'
+      - '\bfind\b[^|;&]*-exec\s+rm\b'
+      - '\bxargs\s+(?:-\S+\s+)*rm\b'
+    why: Bulk deletion of every file a predicate matches; a loose predicate deletes far more than intended.
+    safer: Run the same find with -print first and have a human review the list.
+
+  - id: BP-FS-004
+    title: Raw disk write, format, or secure wipe
+    category: data-destruction
+    platform: shell
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bdd\b[^|;&]*\bof=/dev/'
+      - '\bmkfs(?:\.\w+)?\b'
+      - '\bwipefs\b'
+      - '\bshred\b'
+      - '>\s*/dev/(?:sd|nvme|xvd|vd|disk)\w*'
+      - '\bformat\s+[a-zA-Z]:'
+    why: Overwrites or formats storage at the block level.
+    safer: This should never be done by an agent. Have a human run it.
+
+  - id: BP-FS-005
+    title: World-writable or ownership change on a broad path
+    category: privilege-escalation
+    platform: shell
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell]
+    patterns:
+      - '\bchmod\s+(?:-\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*\s+(?:0?777|a\+rwx|o\+w)'
+      - '\bchmod\s+(?:0?777|a\+rwx)\s+/'
+      - '\bchown\s+(?:-\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*\s+\S+\s+/(?:\s|$)'
+    why: Recursive permission changes are hard to reverse and can expose every file in the tree.
+    safer: Change permissions on the specific file that needs it.
+
+  # ------------------------------------------------------------ git
+  - id: BP-GIT-001
+    title: Force push
+    category: history-rewrite
+    platform: git
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell]
+    patterns:
+      - '\bgit\s+push\b[^|;&]*\s(?:--force|--force-with-lease|-f)(?:\s|=|$)'
+      - '\bgit\s+push\b[^|;&]*\s\+\S+'
+    why: Overwrites remote history; other people's commits can be lost.
+    safer: Push to a new branch and open a pull request.
+
+  - id: BP-GIT-002
+    title: Discard uncommitted work
+    category: data-destruction
+    platform: git
+    severity: high
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bgit\s+reset\s+(?:\S+\s+)*--hard\b'
+      - '\bgit\s+clean\s+(?:\S+\s+)*-[a-zA-Z]*f'
+      - '\bgit\s+checkout\s+(?:--\s+)?\.(?:\s|$)'
+      - '\bgit\s+restore\s+(?:--\S+\s+)*\.(?:\s|$)'
+      - '\bgit\s+stash\s+(?:drop|clear)\b'
+    why: Uncommitted changes are not in git history, so discarding them is permanent.
+    safer: Run git stash or commit to a scratch branch first.
+
+  - id: BP-GIT-003
+    title: Delete branches, tags, or rewrite history
+    category: history-rewrite
+    platform: git
+    severity: high
+    reversibility: hard-to-reverse
+    kinds: [shell]
+    patterns:
+      - '\bgit\s+branch\s+(?:\S+\s+)*-D\b'
+      - '\bgit\s+push\b[^|;&]*\s(?:--delete|-d)\s'
+      - '\bgit\s+push\s+\S+\s+:\S+'
+      - '\bgit\s+(?:filter-branch|filter-repo)\b'
+      - '\bgit\s+reflog\s+expire\b'
+      - '\bgit\s+gc\s+(?:\S+\s+)*--prune=now'
+    why: Removes refs or rewrites history that others may depend on.
+    safer: Leave the branch in place and ask a human to clean it up.
+
+  # ------------------------------------------------------------ code execution
+  - id: BP-EXEC-001
+    title: Pipe a download straight into a shell
+    category: code-execution
+    platform: shell
+    severity: high
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\b(?:curl|wget|iwr|Invoke-WebRequest)\b[^|;&]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b'
+      - '\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?python\d?\b'
+      - '\bbash\s+<\(\s*(?:curl|wget)\b'
+      - '\biex\s*\(\s*(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b'
+    why: Runs unreviewed remote code with the agent's full privileges.
+    safer: Download the script, show it for review, then run it.
+
+  - id: BP-EXEC-002
+    title: Obfuscated or dynamically built command
+    category: code-execution
+    platform: shell
+    severity: high
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '\bbase64\s+(?:-d|--decode|-D)\b[^;&]*\|\s*(?:ba|z)?sh\b'
+      - '\b(?:ba|z)?sh\s+-c\s+["'']?\$\('
+      - '\beval\s+["'']?\$\('
+      - '\beval\s+["'']?`'
+      - '\bpython\d?\s+-c\s+[^;&|]*(?:b64decode|exec\(|__import__\(.os.\)\.system)'
+      - '\bxxd\s+-r\b[^;&]*\|\s*(?:ba|z)?sh\b'
+    why: Hides the real command from review, which is also how an agent would evade a guardrail.
+    safer: Run the plain command so it can be reviewed.
+
+  - id: BP-EXEC-003
+    title: Elevated privileges
+    category: privilege-escalation
+    platform: shell
+    severity: medium
+    reversibility: reversible
+    kinds: [shell]
+    patterns:
+      - '(?:^|\s)sudo\s'
+      - '(?:^|\s)su\s+-'
+      - '\bdoas\s'
+    why: The command runs with root privileges, widening the blast radius of any mistake.
+    safer: Run without sudo if the task allows it.
+
+  # ------------------------------------------------------------ credentials
+  - id: BP-CRED-001
+    title: Read a credential store or secrets file
+    category: credential-access
+    platform: shell
+    severity: high
+    reversibility: irreversible
+    kinds: [shell, file]
+    patterns:
+      - '\.aws/(?:credentials|config)\b'
+      - '\.config/gcloud/(?:credentials|application_default_credentials|legacy_credentials|access_tokens)'
+      - '\.azure/(?:accessTokens|msal_token_cache|azureProfile)'
+      - '\.kube/config\b'
+      - '\.ssh/id_[a-z0-9]+(?!\.pub)\b'
+      - '\.netrc\b'
+      - '\.docker/config\.json\b'
+      - '\.git-credentials\b'
+      - '\.(?:npmrc|pypirc)\b'
+      - '\.databrickscfg\b'
+      - '\.railway/config\.json\b'
+      - '(?:^|[\s/''"])\.env(?:\.[\w-]+)?(?:$|[\s''"])'
+      - '\bsecrets?\.(?:ya?ml|json|toml)\b'
+    unless:
+      - '\.env\.(?:example|sample|template)\b'
+    why: An agent that finds a long-lived token can use it far beyond the task it was given. Reading a secret is irreversible; it cannot be un-read.
+    safer: Inject the specific scoped credential the task needs through a secret manager.
+    refs:
+      - https://oecd.ai/en/incidents/2026-04-27-6153
+
+  - id: BP-CRED-002
+    title: Dump all environment variables
+    category: credential-access
+    platform: shell
+    severity: medium
+    reversibility: irreversible
+    kinds: [shell]
+    patterns:
+      - '(?:^|[\s;&|])printenv\s*(?:$|[;&|>])'
+      - '(?:^|[\s;&|])env\s*(?:$|[;&|>])'
+      - '(?:^|[\s;&|])set\s*(?:$|[;&|>])'
+      - '\bGet-ChildItem\s+env:'
+      - '/proc/(?:self|\d+)/environ'
+    why: Environment variables often hold API keys and tokens.
+    safer: Read only the specific variable the task needs.
+
+  - id: BP-CRED-003
+    title: Cloud instance metadata endpoint
+    category: sandbox-escape
+    platform: shell
+    severity: critical
+    reversibility: irreversible
+    kinds: [shell, url, tool]
+    patterns:
+      - '169\.254\.169\.254'
+      - '169\.254\.170\.2'
+      - '\[?fd00:ec2::254\]?'
+      - '\bmetadata\.google\.internal\b'
+      - '\bmetadata\.azure\.com\b'
+      - '100\.100\.100\.200'
+    why: The metadata service hands out the host's cloud credentials; reaching it is a classic first step in escaping a sandbox and moving laterally.
+    safer: Agents should never need this. Block egress to link-local addresses at the network layer as well.
+    refs:
+      - https://en.wikipedia.org/wiki/OpenAI_rogue_agent_breach_of_Hugging_Face
+
+  # ------------------------------------------------------------ self-protection
+  - id: BP-SELF-001
+    title: Agent tries to approve, disable, or reconfigure Brakepoint
+    category: self-tamper
+    platform: brakepoint
+    severity: critical
+    reversibility: irreversible
+    locked: true
+    kinds: [shell, file, tool]
+    patterns:
+      - '\bbrakepoint\s+(?:approve|deny|init|disable)\b'
+      - '\.brakepoint(?:\.ya?ml|/)'
+      - '\bBRAKEPOINT_[A-Z_]+\s*='
+      - '\.claude/settings(?:\.local)?\.json\b'
+      - 'pip\d?\s+uninstall\s+(?:\S+\s+)*brakepoint\b'
+    why: A guardrail the agent can switch off is not a guardrail. Only a human may approve actions or change the policy.
+    safer: Ask the human to change the policy themselves.
