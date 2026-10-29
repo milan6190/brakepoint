@@ -64,7 +64,7 @@ Brakepoint is that something: enforcement outside the model, at the tool boundar
 ## Quick start
 
 ```bash
-pip install git+https://github.com/milan6190/brakepoint
+pip install brakepoint         # or: pipx install brakepoint
 brakepoint replay              # see what it would have done in real incidents
 brakepoint check "kubectl delete ns payments"
 ```

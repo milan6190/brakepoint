@@ -47,4 +47,10 @@ pytest -q && ruff check src tests
 - Fail closed. If you add a code path that can raise, make sure the integration denies.
 - No telemetry, ever.
 
+## Releasing (maintainers)
+
+1. Bump `__version__` in `src/brakepoint/__init__.py` and merge to `main`.
+2. Create a GitHub release with tag `vX.Y.Z` matching that version.
+3. The `Release` workflow tests, builds, and publishes to PyPI via trusted publishing.
+
 By contributing you agree to license your work under the MIT license.
