@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import select
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -109,6 +110,9 @@ class QueueApprover(Approver):
         payload = {
             "id": request_id,
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "expires": time.time() + self.timeout,
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
             "summary": redact(_banner(verdict)),
             "verdict": json.loads(redact(json.dumps(verdict.to_dict()))),
         }
@@ -137,7 +141,15 @@ class QueueApprover(Approver):
         return ApprovalResult(False, "queue", f"{request_id} timed out")
 
     def decide(self, request_id: str, approve: bool) -> bool:
-        if not (self.pending_dir / f"{request_id}.json").exists():
+        path = self.pending_dir / f"{request_id}.json"
+        if not path.exists():
+            return False
+        try:
+            item = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return False
+        if _is_stale(item, self.timeout):
+            self._cleanup(request_id)
             return False
         self.decided_dir.mkdir(parents=True, exist_ok=True)
         record = {"decision": "approve" if approve else "deny", "by": _user(), "at": time.time()}
@@ -150,9 +162,14 @@ class QueueApprover(Approver):
         items = []
         for path in sorted(self.pending_dir.glob("*.json")):
             try:
-                items.append(json.loads(path.read_text()))
-            except ValueError:
+                item = json.loads(path.read_text())
+            except (OSError, ValueError):
                 continue
+            if _is_stale(item, self.timeout):
+                # Nobody is waiting on it any more (timed out, or the waiting process died).
+                self._cleanup(path.stem)
+                continue
+            items.append(item)
         return items
 
     def _cleanup(self, request_id: str) -> None:
@@ -171,6 +188,25 @@ def build_approver(policy) -> Approver:
     if backend == "queue":
         return QueueApprover(policy.queue_dir, policy.approval_timeout)
     return DenyApprover()
+
+
+def _is_stale(item: dict, timeout: float) -> bool:
+    """True when no process can still be waiting for this request's decision."""
+    expires = item.get("expires")
+    if expires is None:  # written by an older version: assume the current timeout
+        with contextlib.suppress(KeyError, TypeError, ValueError):
+            expires = datetime.fromisoformat(item["created"]).timestamp() + timeout
+    if isinstance(expires, (int, float)) and time.time() > expires:
+        return True
+    pid = item.get("pid")
+    if isinstance(pid, int) and pid > 0 and item.get("host") == socket.gethostname():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:  # exists but owned by another user
+            return False
+    return False
 
 
 def _atomic_write(path: Path, text: str) -> None:

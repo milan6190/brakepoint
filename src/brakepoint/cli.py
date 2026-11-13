@@ -122,7 +122,7 @@ def cmd_decide(args) -> int:
     if not ok:
         print(f"No pending request {args.id}.", file=sys.stderr)
         return 1
-    print(f"{args.command_name.capitalize()}d {args.id}.")
+    print(f"{'Approved' if args.command_name == 'approve' else 'Denied'} {args.id}.")
     return 0
 
 

@@ -175,6 +175,30 @@ def test_mcp_proxy_honours_destructive_hint(policy):
     assert blocked is not None and "BP-HINT-001" in blocked["result"]["content"][0]["text"]
 
 
+def test_mcp_proxy_honours_destructive_hint_without_tools_list(policy):
+    # The client never lists tools, so the proxy fetches the list itself before the call.
+    replies, proxy = _run_proxy(
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "archive_thread", "arguments": {}}},
+        ],
+        policy,
+    )
+    by_id = {r["id"]: r for r in replies}
+    assert set(by_id) == {1, 2}  # the proxy's own tools/list reply is not passed to the client
+    assert by_id[2]["result"]["isError"] is True
+    assert "BP-HINT-001" in by_id[2]["result"]["content"][0]["text"]
+    assert proxy.tools_known
+
+
+def test_mcp_proxy_blocks_calls_when_tool_list_is_unavailable(policy):
+    # The server is gone, so the proxy cannot learn its annotations: fail closed.
+    proxy = McpProxy(["true"], "mail", policy, io.BytesIO(), io.BytesIO())
+    proxy.run()
+    with pytest.raises(RuntimeError):
+        proxy.check_call({"id": 9, "params": {"name": "list_messages", "arguments": {}}})
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_check_exit_codes(capsys):
     assert cli_main(["check", "ls"]) == 0
@@ -239,3 +263,40 @@ def test_queue_times_out_closed(tmp_path):
     approver = QueueApprover(tmp_path / "queue", timeout=0.2, poll=0.05)
     result = approver.request(Engine().evaluate(Action.shell("terraform destroy")))
     assert not result.approved
+
+
+def test_queue_drops_requests_nobody_is_waiting_for(tmp_path):
+
+    from brakepoint import Action, Engine
+    from brakepoint.approval import QueueApprover
+
+    approver = QueueApprover(tmp_path / "queue", timeout=60)
+    verdict = Engine().evaluate(Action.shell("terraform destroy"))
+
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    orphan = approver.submit(verdict)
+    path = approver.pending_dir / f"{orphan}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "pid": dead.pid}))
+
+    expired = approver.submit(verdict)
+    path = approver.pending_dir / f"{expired}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "expires": 0}))
+
+    live = approver.submit(verdict)
+    assert [item["id"] for item in approver.pending()] == [live]
+    assert not approver.decide(orphan, approve=True)
+    assert not approver.decide(expired, approve=True)
+    assert approver.decide(live, approve=True)
+
+
+def test_cli_deny_message(tmp_path, capsys, monkeypatch):
+    from brakepoint import Action, Engine
+    from brakepoint.approval import QueueApprover
+
+    policy_file = tmp_path / "policy.yaml"
+    policy_file.write_text(f"approval:\n  queue_dir: {tmp_path / 'queue'}\n")
+    approver = QueueApprover(tmp_path / "queue", timeout=60)
+    request_id = approver.submit(Engine().evaluate(Action.shell("terraform destroy")))
+    assert cli_main(["--policy", str(policy_file), "deny", request_id]) == 0
+    assert f"Denied {request_id}." in capsys.readouterr().out
