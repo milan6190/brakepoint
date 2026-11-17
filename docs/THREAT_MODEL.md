@@ -17,7 +17,8 @@
 | Component | Trusted? | Notes |
 |---|---|---|
 | The human at the terminal / harness prompt | Yes | The only party that can approve. |
-| Policy file `.brakepoint.yaml` | Yes | The agent is blocked from writing it. |
+| Policy file `.brakepoint.yaml` | Yes | The agent is blocked from writing it. The hook looks it up from `CLAUDE_PROJECT_DIR`, so `cd` elsewhere does not escape it. Unknown keys and wrongly typed values are errors, so a typo cannot quietly weaken it. |
+| Approval queue, audit log, user policy | Yes | Default locations are covered by BP-SELF-001; custom paths set in the policy are covered by BP-SELF-002. |
 | Catalog files | Yes | Shipped with the package or listed in the policy. |
 | The model and its output | No | Everything it proposes is checked. |
 | MCP servers and their annotations | No | `destructiveHint` can only tighten, never relax. |
@@ -35,6 +36,9 @@
 In Claude Code's `bypassPermissions` and `dontAsk` modes no human sees an `ask`, so
 Brakepoint denies instead (configurable via `approval.unattended_modes`).
 
+The MCP proxy refuses JSON-RPC batches that contain a `tools/call`, so a batch cannot carry
+a call past the check.
+
 ## Known limits
 
 - **Pattern matching is not program analysis.** Brakepoint sees the command the agent asks
@@ -42,7 +46,11 @@ Brakepoint denies instead (configurable via `approval.unattended_modes`).
   checked at the level of its command line. Pair Brakepoint with least privilege.
 - **Novel phrasings.** A determined adversary can find a destructive command the catalog
   does not know. De-quoting, segment splitting, and the obfuscation rule (BP-EXEC-002)
-  raise the bar; they do not close it.
+  raise the bar; they do not close it. `$IFS` word splitting and SQL comments used as
+  spaces (`DROP/**/TABLE`) are normalised away before matching.
+- **Very long actions.** Text over 16,000 characters is matched on its first and last 8,000
+  only, so that no input can make evaluation slow enough to time out the hook. Such actions
+  always match BP-SIZE-001 (high, so approval by default) and go to a human.
 - **Same-user tampering.** If the agent runs as your OS user, it could in principle alter
   files Brakepoint relies on through a path the catalog doesn't recognise. Run agents as a
   separate user, and ship the audit log to a store the agent cannot write.

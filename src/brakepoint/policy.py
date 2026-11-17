@@ -109,46 +109,56 @@ class Policy:
     # ----------------------------------------------------------- loading
     @classmethod
     def from_dict(cls, data: dict[str, Any], source: str = "<dict>") -> Policy:
+        # Unknown keys are errors, not silently ignored: a typo such as `default:` for
+        # `defaults:` would otherwise quietly fall back to a weaker policy.
+        _check_keys(data, TOP_LEVEL_KEYS, source, "")
         policy = cls(source=source)
-        defaults = data.get("defaults") or {}
+        defaults = _mapping(data, "defaults", source)
         for key, value in defaults.items():
             if key not in ("critical", "high", "medium", "unmatched"):
                 raise PolicyError(f"{source}: unknown defaults key {key!r}")
             _check_decision(value, f"{source}: defaults.{key}")
             policy.defaults[key] = value
 
-        protected = data.get("protected") or {}
+        protected = _mapping(data, "protected", source)
+        _check_keys(protected, {"markers", "protected_action"}, source, "protected.")
         if "markers" in protected:
-            policy.protected_markers = [str(m) for m in protected["markers"] or []]
+            policy.protected_markers = [str(m) for m in _str_list(protected["markers"], f"{source}: protected.markers")]
         if "protected_action" in protected:
             _check_decision(protected["protected_action"], f"{source}: protected.protected_action")
             policy.protected_action = protected["protected_action"]
 
-        approval = data.get("approval") or {}
+        approval = _mapping(data, "approval", source)
+        _check_keys(approval, {"backend", "timeout_seconds", "unattended_modes", "queue_dir"}, source, "approval.")
         backend = approval.get("backend", policy.approval_backend)
         if backend not in ("auto", "harness", "tty", "queue", "deny"):
             raise PolicyError(f"{source}: approval.backend must be auto, harness, tty, queue or deny")
         policy.approval_backend = backend
-        policy.approval_timeout = int(approval.get("timeout_seconds", policy.approval_timeout))
-        policy.unattended_modes = list(approval.get("unattended_modes", policy.unattended_modes))
+        try:
+            policy.approval_timeout = int(approval.get("timeout_seconds", policy.approval_timeout))
+        except (TypeError, ValueError) as exc:
+            raise PolicyError(f"{source}: approval.timeout_seconds must be a number") from exc
+        if "unattended_modes" in approval:
+            policy.unattended_modes = _str_list(approval["unattended_modes"], f"{source}: approval.unattended_modes")
         policy.queue_dir = approval.get("queue_dir", policy.queue_dir)
 
-        for rule_id, value in (data.get("rules") or {}).items():
+        for rule_id, value in _mapping(data, "rules", source).items():
             _check_decision(value, f"{source}: rules.{rule_id}")
             policy.rule_overrides[str(rule_id)] = value
 
-        for pattern in data.get("allow") or []:
+        for pattern in _str_list(data.get("allow") or [], f"{source}: allow"):
             try:
                 policy.allow.append(re.compile(pattern))
             except re.error as exc:
                 raise PolicyError(f"{source}: bad allow pattern {pattern!r}: {exc}") from exc
 
         base = Path(source).parent if source not in ("<dict>", "builtin-defaults") else Path.cwd()
-        for path in data.get("catalogs") or []:
+        for path in _str_list(data.get("catalogs") or [], f"{source}: catalogs"):
             p = Path(path).expanduser()
             policy.catalogs.append(str(p if p.is_absolute() else base / p))
 
-        audit = data.get("audit") or {}
+        audit = _mapping(data, "audit", source)
+        _check_keys(audit, {"enabled", "path"}, source, "audit.")
         policy.audit_enabled = bool(audit.get("enabled", True))
         policy.audit_path = audit.get("path", policy.audit_path)
         return policy
@@ -162,6 +172,29 @@ class Policy:
         if not isinstance(data, dict):
             raise PolicyError(f"{found}: policy must be a mapping")
         return cls.from_dict(data, source=str(found))
+
+
+TOP_LEVEL_KEYS = {"version", "defaults", "protected", "approval", "rules", "allow", "catalogs", "audit"}
+
+
+def _check_keys(data: dict, allowed: set[str], source: str, prefix: str) -> None:
+    unknown = sorted(str(k) for k in data if k not in allowed)
+    if unknown:
+        raise PolicyError(f"{source}: unknown key(s) {', '.join(prefix + k for k in unknown)}")
+
+
+def _mapping(data: dict, key: str, source: str) -> dict:
+    value = data.get(key) or {}
+    if not isinstance(value, dict):
+        raise PolicyError(f"{source}: {key} must be a mapping")
+    return value
+
+
+def _str_list(value: Any, where: str) -> list:
+    # A bare string would otherwise be iterated character by character.
+    if not isinstance(value, list):
+        raise PolicyError(f"{where} must be a list")
+    return value
 
 
 def _check_decision(value: str, where: str) -> None:

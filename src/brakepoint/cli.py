@@ -202,7 +202,7 @@ def cmd_init(args) -> int:
         data = json.loads(settings.read_text()) if settings.exists() else {}
         hooks = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
         entry = {
-            "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|WebFetch|mcp__.*",
+            "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|WebFetch|mcp__.*",
             "hooks": [{"type": "command", "command": "brakepoint hook claude-code", "timeout": 600}],
         }
         if not any("brakepoint hook" in json.dumps(h) for h in hooks):

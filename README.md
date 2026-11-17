@@ -91,7 +91,7 @@ This writes `.brakepoint.yaml` and adds a `PreToolUse` hook to `.claude/settings
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|WebFetch|mcp__.*",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|WebFetch|mcp__.*",
         "hooks": [{ "type": "command", "command": "brakepoint hook claude-code", "timeout": 600 }]
       }
     ]
@@ -179,7 +179,8 @@ catalogs:
 Brakepoint is one layer, not a sandbox. It matches what an agent *asks* to do, so it cannot
 see inside a script the agent writes and then runs, and a determined attacker can find
 phrasings no catalog anticipates. It is most valuable when combined with least-privilege
-credentials, network egress controls, and backups the agent cannot reach.
+credentials, network egress controls, and backups the agent cannot reach. Actions longer
+than 16,000 characters are only partly checked, so they always go to a human (BP-SIZE-001).
 See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Roadmap
