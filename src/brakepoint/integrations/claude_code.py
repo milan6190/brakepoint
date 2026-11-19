@@ -16,6 +16,7 @@ call (fail closed).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 
@@ -26,6 +27,7 @@ from ..policy import Policy
 
 FILE_WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 FILE_READ_TOOLS = {"Read"}
+SEARCH_TOOLS = {"Grep"}
 URL_TOOLS = {"WebFetch"}
 
 
@@ -39,6 +41,12 @@ def action_from_hook(payload: dict) -> Action | None:
         return Action.file(str(path), "write", origin="claude-code")
     if tool in FILE_READ_TOOLS:
         return Action.file(str(data.get("file_path", "")), "read", origin="claude-code")
+    if tool in SEARCH_TOOLS:
+        # Grep prints file contents, so searching a secrets file is reading it.
+        action = Action.file(str(data.get("path", "")), "read", origin="claude-code")
+        if data.get("glob"):
+            action.children.append(Action.file(str(data["glob"]), "read", origin="claude-code"))
+        return action
     if tool in URL_TOOLS:
         return Action.url(str(data.get("url", "")), origin="claude-code")
     if tool.startswith("mcp__"):
@@ -96,7 +104,10 @@ def main(stdin=None, stdout=None, policy_path: str | None = None) -> int:
     stdout = stdout or sys.stdout
     try:
         payload = json.load(stdin)
-        policy = Policy.load(policy_path, start=payload.get("cwd"))
+        # Look up the policy from the project root, not the agent's current directory:
+        # otherwise `cd /tmp` would step outside a stricter project policy.
+        start = os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd")
+        policy = Policy.load(policy_path, start=start)
         response = handle(payload, policy)
     except Exception as exc:  # fail closed
         sys.stderr.write(

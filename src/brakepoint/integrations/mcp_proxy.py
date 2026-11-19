@@ -44,6 +44,19 @@ HINT_RULE = Rule(
 )
 
 
+def _batch_refusal(batch: list) -> list:
+    """Error responses for every request in a batch (notifications get none)."""
+    return [
+        {
+            "jsonrpc": "2.0",
+            "id": m.get("id"),
+            "error": {"code": -32600, "message": "Brakepoint does not forward batched requests that call tools."},
+        }
+        for m in batch
+        if isinstance(m, dict) and "id" in m
+    ]
+
+
 class McpProxy:
     def __init__(
         self,
@@ -89,13 +102,14 @@ class McpProxy:
             msg = json.loads(line)
         except ValueError:
             return
-        if not isinstance(msg, dict) or msg.get("id") not in self._list_ids:
-            return
-        self._list_ids.discard(msg.get("id"))
-        for tool in (msg.get("result") or {}).get("tools", []) or []:
-            annotations = tool.get("annotations") or {}
-            if annotations.get("destructiveHint") is True:
-                self.destructive_tools.add(tool.get("name", ""))
+        for item in msg if isinstance(msg, list) else [msg]:
+            if not isinstance(item, dict) or item.get("id") not in self._list_ids:
+                continue
+            self._list_ids.discard(item.get("id"))
+            for tool in (item.get("result") or {}).get("tools", []) or []:
+                annotations = tool.get("annotations") or {}
+                if annotations.get("destructiveHint") is True:
+                    self.destructive_tools.add(tool.get("name", ""))
 
     # ----------------------------------------------------------- policy
     def check_call(self, msg: dict) -> dict | None:
@@ -145,6 +159,17 @@ class McpProxy:
                 except ValueError:
                     self._send_server(line)
                     continue
+                if isinstance(msg, list):
+                    # JSON-RPC batch. Checking calls one by one would mean splitting the batch;
+                    # refusing any batch that contains a tool call is simpler and fails closed.
+                    if any(isinstance(m, dict) and m.get("method") == "tools/call" for m in msg):
+                        refusal = _batch_refusal(msg)
+                        if refusal:  # a batch of notifications only gets no reply
+                            self._send_client(refusal)
+                        continue
+                    for m in msg:
+                        if isinstance(m, dict) and m.get("method") == "tools/list":
+                            self._list_ids.add(m.get("id"))
                 if isinstance(msg, dict) and msg.get("method") == "tools/list":
                     self._list_ids.add(msg.get("id"))
                 if isinstance(msg, dict) and msg.get("method") == "tools/call":

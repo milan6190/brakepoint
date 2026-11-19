@@ -239,3 +239,60 @@ def test_queue_times_out_closed(tmp_path):
     approver = QueueApprover(tmp_path / "queue", timeout=0.2, poll=0.05)
     result = approver.request(Engine().evaluate(Action.shell("terraform destroy")))
     assert not result.approved
+
+
+# ------------------------------------------------------------------ regressions
+def test_hook_checks_grep_on_secrets_files(asking_policy):
+    out = hook({"tool_name": "Grep", "tool_input": {"pattern": ".", "path": "/home/u/.aws/credentials"}}, asking_policy)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "ask"
+    out = hook({"tool_name": "Grep", "tool_input": {"pattern": "KEY", "path": ".", "glob": "**/.env"}}, asking_policy)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert hook({"tool_name": "Grep", "tool_input": {"pattern": "def ", "path": "src"}}, asking_policy) is None
+
+
+@pytest.mark.parametrize(
+    "path", [".claude//settings.json", "/repo/.claude/./settings.json", ".claude/x/../settings.json"]
+)
+def test_hook_normalises_paths_before_self_protection(asking_policy, path):
+    out = hook({"tool_name": "Write", "tool_input": {"file_path": path, "content": "{}"}}, asking_policy)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hook_reads_policy_from_project_dir_not_cwd(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".brakepoint.yaml").write_text(
+        f"defaults: {{high: deny}}\naudit: {{path: {tmp_path / 'audit.jsonl'}}}\n"
+    )
+    monkeypatch.delenv("BRAKEPOINT_POLICY", raising=False)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    payload = {"tool_name": "Bash", "tool_input": {"command": "git push --force"}, "cwd": str(tmp_path)}
+    out = io.StringIO()
+    assert claude_code.main(stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+    assert json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_audit_chain_survives_entries_larger_than_the_read_block(asking_policy, tmp_path):
+    from brakepoint import Action, Engine
+
+    log = AuditLog(tmp_path / "big.jsonl")
+    engine = Engine(asking_policy)
+    log.record(engine.evaluate(Action.shell("sudo echo " + "x" * 300_000)), "allowed")
+    log.record(engine.evaluate(Action.shell("sudo ls")), "allowed")
+    log.record(engine.evaluate(Action.shell("sudo echo " + "y" * 70_000)), "allowed")
+    log.record(engine.evaluate(Action.shell("sudo ls")), "allowed")
+    assert log.verify() == (True, "4 entries, chain intact")
+
+
+def test_mcp_proxy_refuses_batched_tool_calls(policy):
+    batch = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "batch_delete", "arguments": {}}},
+        {"jsonrpc": "2.0", "method": "notifications/progress", "params": {}},
+    ]
+    client_in = io.BytesIO((json.dumps(batch) + "\n").encode())
+    client_out = io.BytesIO()
+    McpProxy([sys.executable, str(FIXTURES / "fake_mcp_server.py")], "mail", policy, client_in, client_out).run()
+    replies = [json.loads(line) for line in client_out.getvalue().splitlines()]
+    assert replies == [
+        [{"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": replies[0][0]["error"]["message"]}}]
+    ]

@@ -19,7 +19,8 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED GOOGLE API KEY]"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "[REDACTED JWT]"),
     (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{12,}"), r"\1 [REDACTED]"),
-    (re.compile(r"(?i)(\w+://[^:/\s@]+:)[^@\s]+(@)"), r"\1[REDACTED]\2"),
+    # Bounded quantifiers: an unbounded \w+ here made redaction quadratic on long input.
+    (re.compile(r"(?i)(\b[a-z][\w+.-]{0,31}://[^:/\s@]{1,256}:)[^@\s]{1,512}(@)"), r"\1[REDACTED]\2"),
     (
         re.compile(
             r"(?i)\b((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|auth)"

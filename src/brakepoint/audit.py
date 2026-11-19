@@ -49,15 +49,21 @@ def _last_hash(handle) -> str:
     size = handle.tell()
     if size == 0:
         return GENESIS
-    block = min(size, 65536)
-    handle.seek(size - block)
-    lines = handle.read(block).decode("utf-8", errors="replace").strip().splitlines()
-    for line in reversed(lines):
-        try:
-            return json.loads(line)["hash"]
-        except (ValueError, KeyError):
-            continue
-    return GENESIS
+    block = 65536
+    while True:
+        block = min(block, size)
+        handle.seek(size - block)
+        lines = handle.read(block).rstrip(b"\n").split(b"\n")
+        if block < size:
+            lines = lines[1:]  # the first line may start mid-entry; it is only whole once read in full
+        for line in reversed(lines):
+            try:
+                return json.loads(line)["hash"]
+            except (ValueError, KeyError, TypeError):
+                continue
+        if block == size:
+            return GENESIS
+        block *= 4  # the last entry is longer than the block read; read further back
 
 
 class AuditLog:

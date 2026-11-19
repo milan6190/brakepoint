@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,6 +15,11 @@ _SEGMENT_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n|`|\$\()\s*")
 _LINE_CONTINUATION = re.compile(r"\\\r?\n")
 _WHITESPACE = re.compile(r"[ \t]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# Shell word splitting on $IFS:  rm${IFS}-rf${IFS}/  is  rm -rf /
+_IFS = re.compile(r"\$(?:\{IFS\}|IFS\b)")
+# SQL comments used as whitespace:  DROP/**/TABLE users
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
 
 # Argument keys that usually carry a command or a query inside a tool call.
 SHELL_ARG_KEYS = {"command", "cmd", "shell", "script", "bash", "commands", "code"}
@@ -45,6 +51,9 @@ class Action:
 
     @classmethod
     def file(cls, path: str, mode: str = "write", origin: str = "cli") -> Action:
+        # Normalise so  .claude//settings.json  or  .claude/./settings.json  match like the plain path.
+        if path:
+            path = posixpath.normpath(path)
         return cls(kind="file", text=f"{mode} {path}", name=mode, origin=origin)
 
     @classmethod
@@ -79,11 +88,11 @@ class Action:
                 if segment:
                     candidates.append(segment)
         candidates.append(full)
-        # De-quoted variants defeat trivial evasion like  r''m -rf /  or "rm" -rf /
+        # Variants defeat trivial evasion: quoting (r''m -rf /), $IFS as a space, SQL comments as spaces.
         for candidate in list(candidates):
-            dequoted = _dequote(candidate)
-            if dequoted != candidate:
-                candidates.append(dequoted)
+            for variant in _variants(candidate, self.kind):
+                if variant != candidate:
+                    candidates.append(variant)
         return _unique(candidates)
 
     def name_candidates(self) -> list[str]:
@@ -101,6 +110,15 @@ def normalise_tool_name(name: str) -> str:
         part = re.sub(r"[-\s]+", "_", part)
         words.append(part.lower())
     return " ".join(words)
+
+
+def _variants(text: str, kind: str) -> list[str]:
+    plain = _IFS.sub(" ", text)
+    plain = _SQL_BLOCK_COMMENT.sub(" ", plain)
+    if kind == "sql":
+        plain = _SQL_LINE_COMMENT.sub(" ", plain)
+    plain = _WHITESPACE.sub(" ", plain).strip()
+    return [_dequote(text), plain, _dequote(plain)]
 
 
 def _dequote(text: str) -> str:

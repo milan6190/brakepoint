@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .actions import Action, _dequote
 from .catalog import SEVERITIES, Catalog, Rule, load_catalog
-from .policy import Policy, decision_rank
+from .policy import Policy, PolicyError, decision_rank
+
+# Longer candidates are matched on their head and tail only. Several catalog patterns
+# scan ahead from a keyword, which is quadratic when an agent repeats the keyword; the
+# cap keeps every evaluation fast, and BP-SIZE-001 sends oversized actions to a human.
+MAX_CANDIDATE = 16_000
+
+SIZE_RULE = Rule(
+    id="BP-SIZE-001",
+    title="Action too long to check automatically",
+    category="code-execution",
+    platform="brakepoint",
+    severity="high",
+    reversibility="irreversible",
+    kinds=("shell", "tool", "sql", "file", "url"),
+    patterns=(re.compile(r".^"),),  # never matches text; added by the engine
+    why=f"Over {MAX_CANDIDATE:,} characters, only the start and end were checked against the catalog.",
+    safer="Split the work into smaller steps, or write the content to a file and review it first.",
+    source="engine",
+)
+# Rule ids that are not in the catalog files but can still be overridden in a policy.
+SYNTHETIC_RULE_IDS = {"BP-SIZE-001", "BP-HINT-001"}
 
 
 @dataclass
@@ -86,12 +110,24 @@ class Engine:
     def __init__(self, policy: Policy | None = None, catalog: Catalog | None = None):
         self.policy = policy or Policy()
         self.catalog = catalog or load_catalog(self.policy.catalogs)
+        unknown = sorted(set(self.policy.rule_overrides) - {r.id for r in self.catalog} - SYNTHETIC_RULE_IDS)
+        if unknown:
+            raise PolicyError(f"{self.policy.source}: rules override unknown rule id(s): {', '.join(unknown)}")
+        self_rule = _self_paths_rule(self.policy)
+        if self_rule is not None:
+            self.catalog = Catalog([*self.catalog.rules, self_rule])
 
     def evaluate(self, action: Action, extra_matches: list[Match] | None = None) -> Verdict:
         matches = self._match(action)
         for child in action.children:
             matches.extend(self._match(child))
         matches.extend(extra_matches or [])
+        oversized = next(
+            (c for a in (action, *action.children) for c in a.text_candidates() if len(c) > MAX_CANDIDATE), None
+        )
+        if oversized is not None:
+            decision, note = self.decide(SIZE_RULE, protected=False)
+            matches.append(Match(SIZE_RULE, oversized[:200], False, decision, note))
         matches = _dedupe(matches)
         if not matches:
             return Verdict(action, self.policy.defaults.get("unmatched", "allow"))
@@ -121,7 +157,7 @@ class Engine:
 
     # ----------------------------------------------------------- internals
     def _match(self, action: Action) -> list[Match]:
-        text_candidates = action.text_candidates()
+        text_candidates = _bounded(action.text_candidates())
         name_candidates = action.name_candidates()
         allowed = [c for c in text_candidates if self.policy.allow and self.policy.is_allowlisted(c)]
         found: list[Match] = []
@@ -138,6 +174,52 @@ class Engine:
                     found.append(Match(rule, candidate, protected, decision, note))
                     break
         return found
+
+
+def _bounded(candidates: list[str]) -> list[str]:
+    out = []
+    for c in candidates:
+        if len(c) > MAX_CANDIDATE:
+            half = MAX_CANDIDATE // 2
+            out += [c[:half], c[-half:]]
+        else:
+            out.append(c)
+    return out
+
+
+def _self_paths_rule(policy: Policy) -> Rule | None:
+    """A locked rule for the files this policy itself relies on: the policy file, the
+    approval queue, the audit log, and extra catalogs. Their default locations are
+    covered by BP-SELF-001; this covers custom ones."""
+    paths = [policy.queue_dir, policy.audit_path, *policy.catalogs]
+    if policy.source not in ("<dict>", "builtin-defaults"):
+        paths.append(policy.source)
+    home = str(Path.home())
+    forms: set[str] = set()
+    for raw in paths:
+        if not raw:
+            continue
+        full = os.path.abspath(os.path.expanduser(str(raw)))
+        forms.add(full)
+        if home != "/" and full.startswith(home + os.sep):
+            rest = full[len(home) :]
+            forms.update({"~" + rest, "$HOME" + rest, "${HOME}" + rest})
+    if not forms:
+        return None
+    return Rule(
+        id="BP-SELF-002",
+        title="Agent touches Brakepoint's policy, approval queue, or audit log",
+        category="self-tamper",
+        platform="brakepoint",
+        severity="critical",
+        reversibility="irreversible",
+        kinds=("shell", "file", "tool"),
+        patterns=tuple(re.compile(re.escape(f) + r"(?![\w.-])") for f in sorted(forms)),
+        locked=True,
+        why="These files decide what the agent may do and record what it did. An agent that can write them can approve itself or erase its tracks.",
+        safer="Ask the human to inspect or change these files themselves.",
+        source="policy-paths",
+    )
 
 
 def _covered_by_allowlist(candidate: str, allowed: list[str], action: Action) -> bool:
