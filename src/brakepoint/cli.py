@@ -14,10 +14,10 @@ from . import __version__
 from .actions import Action
 from .approval import QueueApprover, build_approver
 from .audit import AuditLog
-from .catalog import load_catalog
+from .catalog import CatalogError, load_catalog
 from .engine import Engine
 from .incidents import INCIDENTS
-from .policy import DEFAULT_POLICY_YAML, Policy
+from .policy import DEFAULT_POLICY_YAML, Policy, PolicyError, find_policy
 
 EXIT_OK, EXIT_APPROVE, EXIT_DENY = 0, 3, 4
 _COLORS = {"allow": "32", "log": "36", "approve": "33", "deny": "31"}
@@ -189,6 +189,28 @@ def cmd_audit(args) -> int:
     return 0
 
 
+def cmd_validate(args) -> int:
+    """Load a policy exactly as the hook would, and say whether it works."""
+    path = args.path or args.policy
+    source = Path(path).expanduser() if path else find_policy()
+    if source is None:
+        print("No policy file found; the built-in defaults apply.")
+    try:
+        policy = Policy.load(source)
+        engine = Engine(policy)
+    except (PolicyError, CatalogError, OSError, ValueError) as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        print("The hook blocks every tool call while the policy is invalid.", file=sys.stderr)
+        return 1
+    print(f"OK: {policy.source}")
+    print(
+        f"  {len(engine.catalog)} rules, {len(policy.rule_overrides)} override(s), {len(policy.allow)} allow pattern(s)"
+    )
+    print("  defaults: " + ", ".join(f"{k}={v}" for k, v in policy.defaults.items()))
+    print(f"  approval: {policy.approval_backend}, timeout {policy.approval_timeout}s")
+    return 0
+
+
 def cmd_init(args) -> int:
     target = Path(".brakepoint.yaml")
     if target.exists() and not args.force:
@@ -289,6 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", type=int, default=20)
     p.add_argument("--path")
     p.set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("validate", parents=[common], help="check a policy file loads (run after every edit)")
+    p.add_argument("path", nargs="?", help="policy file (default: the one the hook would find)")
+    p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("init", parents=[common], help="write a starter policy (and optionally the Claude Code hook)")
     p.add_argument("--claude-code", action="store_true", help="also add the hook to .claude/settings.json")

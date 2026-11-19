@@ -18,6 +18,11 @@ from pathlib import Path
 
 from .redact import redact
 
+try:
+    import termios
+except ImportError:  # pragma: no cover - non-POSIX
+    termios = None
+
 
 @dataclass
 class ApprovalResult:
@@ -56,26 +61,33 @@ class TtyApprover(Approver):
     @staticmethod
     def available(device: str = "/dev/tty") -> bool:
         try:
-            with open(device, "r+"):
-                return True
+            os.close(os.open(device, os.O_RDWR | os.O_NOCTTY))
+            return True
         except OSError:
             return False
 
     def request(self, verdict) -> ApprovalResult:
+        # Raw file descriptor: a buffered text file opened "r+" needs a seekable file,
+        # which a terminal never is, so open() would always fail.
         try:
-            tty = open(self.device, "r+")
+            fd = os.open(self.device, os.O_RDWR | os.O_NOCTTY)
         except OSError:
             return ApprovalResult(False, "tty", "no terminal available; denied")
-        with tty:
-            tty.write("\n" + _banner(verdict) + "\n")
-            tty.write(f"Type 'yes' to allow this once (auto-deny in {self.timeout}s): ")
-            tty.flush()
-            ready, _, _ = select.select([tty], [], [], self.timeout)
-            if not ready:
-                tty.write("\nNo answer. Denied.\n")
+        try:
+            say = lambda text: os.write(fd, text.encode("utf-8", errors="replace"))  # noqa: E731
+            # Drop type-ahead: only keys pressed after the human has seen this prompt count.
+            if termios:
+                with contextlib.suppress(OSError, termios.error):
+                    termios.tcflush(fd, termios.TCIFLUSH)
+            say("\n" + _banner(verdict) + "\n")
+            say(f"Type 'yes' to allow this once (auto-deny in {self.timeout}s): ")
+            answer = _read_line(fd, time.monotonic() + self.timeout)
+            if answer is None:
+                say("\nNo answer. Denied.\n")
                 return ApprovalResult(False, "tty", "timed out")
-            answer = tty.readline().strip().lower()
-        if answer == "yes":
+        finally:
+            os.close(fd)
+        if answer.strip().lower() == "yes":
             return ApprovalResult(True, f"tty:{_user()}", "approved at terminal")
         return ApprovalResult(False, f"tty:{_user()}", "rejected at terminal")
 
@@ -194,6 +206,27 @@ def _banner(verdict) -> str:
         + "\n"
         + "=" * 64
     )
+
+
+def _read_line(fd: int, deadline: float) -> str | None:
+    """Read one line from fd, or return None if the deadline passes first.
+
+    The deadline covers the whole answer, not just the first keystroke, so a
+    half-typed reply cannot hold the action open forever.
+    """
+    data = b""
+    while b"\n" not in data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            return None
+        chunk = os.read(fd, 1024)
+        if not chunk:  # terminal closed
+            break
+        data += chunk
+    return data.split(b"\n", 1)[0].decode("utf-8", errors="replace")
 
 
 def _notify_tty(message: str) -> None:

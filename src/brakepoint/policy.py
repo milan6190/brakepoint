@@ -25,6 +25,8 @@ def decision_rank(decision: str) -> int:
 DEFAULT_POLICY_YAML = """\
 # Brakepoint policy. Place this file at the root of your project.
 # Agents cannot edit it: writes to .brakepoint.yaml are blocked by rule BP-SELF-001.
+# Check it after every edit with `brakepoint validate`: the hook blocks every tool
+# call while the policy is invalid.
 version: 1
 
 # What to do for each severity when a catalog rule matches.

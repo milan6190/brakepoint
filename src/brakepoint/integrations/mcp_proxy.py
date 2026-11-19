@@ -75,6 +75,8 @@ class McpProxy:
         self.client_in = client_in or sys.stdin.buffer
         self.client_out = client_out or sys.stdout.buffer
         self._out_lock = threading.Lock()
+        self._server_lock = threading.Lock()
+        self._calls: list[threading.Thread] = []
         self._list_ids: set = set()
         self.destructive_tools: set[str] = set()
         self.proc: subprocess.Popen | None = None
@@ -88,8 +90,9 @@ class McpProxy:
 
     def _send_server(self, line: bytes) -> None:
         assert self.proc and self.proc.stdin
-        self.proc.stdin.write(line)
-        self.proc.stdin.flush()
+        with self._server_lock:
+            self.proc.stdin.write(line)
+            self.proc.stdin.flush()
 
     def _pump_server(self) -> None:
         assert self.proc and self.proc.stdout
@@ -147,6 +150,23 @@ class McpProxy:
             "result": {"content": [{"type": "text", "text": reason}], "isError": True},
         }
 
+    def _handle_call(self, msg: dict, line: bytes) -> None:
+        try:
+            blocked = self.check_call(msg)
+        except Exception as exc:  # fail closed
+            blocked = {
+                "jsonrpc": "2.0",
+                "id": msg.get("id"),
+                "result": {
+                    "content": [{"type": "text", "text": f"Brakepoint error, call blocked: {exc}"}],
+                    "isError": True,
+                },
+            }
+        if blocked is not None:
+            self._send_client(blocked)
+        else:
+            self._send_server(line)
+
     # ----------------------------------------------------------- main loop
     def run(self) -> int:
         self.proc = subprocess.Popen(self.server_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -173,21 +193,15 @@ class McpProxy:
                 if isinstance(msg, dict) and msg.get("method") == "tools/list":
                     self._list_ids.add(msg.get("id"))
                 if isinstance(msg, dict) and msg.get("method") == "tools/call":
-                    try:
-                        blocked = self.check_call(msg)
-                    except Exception as exc:  # fail closed
-                        blocked = {
-                            "jsonrpc": "2.0",
-                            "id": msg.get("id"),
-                            "result": {
-                                "content": [{"type": "text", "text": f"Brakepoint error, call blocked: {exc}"}],
-                                "isError": True,
-                            },
-                        }
-                    if blocked is not None:
-                        self._send_client(blocked)
-                        continue
+                    # Checked on its own thread: waiting for a human must not stall pings,
+                    # cancellations, or other calls on the same connection.
+                    worker = threading.Thread(target=self._handle_call, args=(msg, line), daemon=True)
+                    self._calls = [t for t in self._calls if t.is_alive()] + [worker]
+                    worker.start()
+                    continue
                 self._send_server(line)
+            for worker in self._calls:  # client is done; let pending approvals finish
+                worker.join()
         finally:
             if self.proc.stdin:
                 self.proc.stdin.close()
@@ -195,5 +209,10 @@ class McpProxy:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
             pump.join(timeout=2)
         return self.proc.returncode or 0

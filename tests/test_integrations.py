@@ -296,3 +296,77 @@ def test_mcp_proxy_refuses_batched_tool_calls(policy):
     assert replies == [
         [{"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": replies[0][0]["error"]["message"]}}]
     ]
+
+
+# ------------------------------------------------------------------ 0.2.0
+def test_cli_validate(tmp_path, capsys):
+    good = tmp_path / "good.yaml"
+    good.write_text("defaults: {medium: allow}\nrules: {BP-GIT-002: log}\n")
+    assert cli_main(["validate", str(good)]) == 0
+    assert "1 override(s)" in capsys.readouterr().out
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("default: {critical: allow}\n")
+    assert cli_main(["validate", str(bad)]) == 1
+    assert "unknown key(s) default" in capsys.readouterr().err
+    typo = tmp_path / "typo.yaml"
+    typo.write_text("rules: {BP-GIT-999: allow}\n")
+    assert cli_main(["validate", str(typo)]) == 1
+
+
+def test_tty_timeout_covers_a_half_typed_answer():
+    import os
+    import time
+
+    from brakepoint import Action, Engine
+    from brakepoint.approval import TtyApprover
+
+    master, slave = os.openpty()
+    try:
+        verdict = Engine().evaluate(Action.shell("rm -rf /"))
+        os.write(master, b"ye")  # no newline: the human walked away mid-answer
+        start = time.monotonic()
+        result = TtyApprover(timeout=1, device=os.ttyname(slave)).request(verdict)
+        assert not result.approved and result.detail == "timed out"
+        assert time.monotonic() - start < 3
+        os.write(master, b"yes\n")  # typed before the prompt appeared: must not count
+        assert TtyApprover(timeout=1, device=os.ttyname(slave)).request(verdict).detail == "timed out"
+        import threading
+
+        threading.Timer(0.3, os.write, (master, b"yes\n")).start()
+        assert TtyApprover(timeout=5, device=os.ttyname(slave)).request(verdict).approved
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_mcp_proxy_keeps_serving_while_a_call_waits_for_approval(tmp_path):
+    import time
+
+    from brakepoint.approval import ApprovalResult, Approver
+
+    client_out = io.BytesIO()
+
+    class WaitsForOtherReply(Approver):
+        """Approves only once the safe call has been answered. If the proxy blocked
+        while asking, that reply could never arrive and this would reject."""
+
+        def request(self, verdict):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if b"server ran list_messages" in client_out.getvalue():
+                    return ApprovalResult(True, "test", "approved")
+                time.sleep(0.02)
+            return ApprovalResult(False, "test", "proxy was blocked")
+
+    policy = Policy.from_dict({"audit": {"path": str(tmp_path / "audit.jsonl")}})
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "batch_delete", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_messages", "arguments": {}}},
+    ]
+    client_in = io.BytesIO(b"".join((json.dumps(m) + "\n").encode() for m in messages))
+    proxy = McpProxy([sys.executable, str(FIXTURES / "fake_mcp_server.py")], "mail", policy, client_in, client_out)
+    proxy.approver = WaitsForOtherReply()
+    proxy.run()
+    by_id = {r["id"]: r for r in map(json.loads, client_out.getvalue().splitlines())}
+    assert by_id[2]["result"]["content"][0]["text"] == "server ran list_messages"
+    assert by_id[1]["result"]["content"][0]["text"] == "server ran batch_delete"

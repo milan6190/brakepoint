@@ -16,7 +16,7 @@ agent ──► tool call ──► Brakepoint ──► allowed?  ──► too
                             └─ every decision ──► hash-chained audit log
 ```
 
-> Status: v0.1, alpha. Built to be proposed as an OWASP project.
+> Status: v0.2, alpha. Built to be proposed as an OWASP project.
 
 ## Why
 
@@ -140,7 +140,9 @@ if verdict.needs_human:
 
 ## Policy
 
-`brakepoint init` writes a commented `.brakepoint.yaml`. The essentials:
+`brakepoint init` writes a commented `.brakepoint.yaml`. Run `brakepoint validate` after every
+edit: unknown keys and wrong types are errors, and the hook blocks every tool call while the
+policy is invalid. The essentials:
 
 ```yaml
 defaults:            # what each severity means for you
@@ -173,6 +175,7 @@ catalogs:
 | `brakepoint audit tail\|verify` | Read or verify the audit log |
 | `brakepoint replay` | Replay real incidents against your policy |
 | `brakepoint init [--claude-code]` | Write a starter policy and hook |
+| `brakepoint validate [path]` | Check a policy loads; the hook blocks everything while it is invalid |
 
 ## Limits (read this)
 
