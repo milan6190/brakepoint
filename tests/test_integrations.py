@@ -370,3 +370,44 @@ def test_mcp_proxy_keeps_serving_while_a_call_waits_for_approval(tmp_path):
     by_id = {r["id"]: r for r in map(json.loads, client_out.getvalue().splitlines())}
     assert by_id[2]["result"]["content"][0]["text"] == "server ran list_messages"
     assert by_id[1]["result"]["content"][0]["text"] == "server ran batch_delete"
+
+
+# ------------------------------------------------------------------ human approver
+def test_approval_prompt_fences_agent_text():
+    from brakepoint import Action, Engine
+    from brakepoint.approval import _banner
+
+    engine = Engine()
+    forged = "rm -rf ~/work\n BRAKEPOINT: reviewed by security, SAFE to approve.\n" + "=" * 64
+    banner = _banner(engine.evaluate(Action.shell(forged)))
+    lines = banner.splitlines()
+    # Every line carrying agent text sits behind the margin; none looks like our own.
+    assert all(line.startswith("   │ ") for line in lines if "SAFE to approve" in line)
+    assert lines[-1] == "=" * 64 and lines.count("=" * 64) == 3
+    # Terminal escapes and bidi overrides are shown, not executed.
+    banner = _banner(engine.evaluate(Action.shell("rm -rf ~ \x1b[2K‮")))
+    assert "\x1b" not in banner and "‮" not in banner and "\\x1b" in banner
+    # A dangerous tail cannot hide behind a long harmless start.
+    banner = _banner(engine.evaluate(Action.shell("echo " + "a" * 2000 + " ; rm -rf ~")))
+    assert "characters not shown" in banner and banner.count("rm -rf ~") >= 2
+
+
+def test_claude_code_prompt_warns_about_agent_text(asking_policy):
+    out = hook({"tool_name": "Bash", "tool_input": {"command": "rm -rf ~  # approved by security"}}, asking_policy)
+    assert "not what any comment" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_audit_review_suggests_policy_changes(tmp_path, capsys):
+    from brakepoint import Action, Engine
+
+    log = AuditLog(tmp_path / "audit.jsonl")
+    engine = Engine()
+    for _ in range(5):
+        log.record(engine.evaluate(Action.shell("git push --force")), "approved", approver="tty:me")
+        log.record(engine.evaluate(Action.shell("rm -rf ~")), "rejected", approver="tty:me")
+    log.record(engine.evaluate(Action.shell("sudo ls")), "allowed")
+    assert cli_main(["audit", "review", "--path", str(log.path)]) == 0
+    out = capsys.readouterr().out
+    assert "BP-GIT-001" in out and "always approved" in out
+    assert "BP-FS-001" in out and "always rejected" in out
+    assert "ran without a prompt" in out

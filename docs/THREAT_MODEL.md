@@ -12,6 +12,62 @@
 4. **An agent that tries to switch the guardrail off.** Approving its own requests, editing
    the policy, rewriting the hook config, or uninstalling Brakepoint are locked rules.
 
+## Non-goals
+
+Brakepoint deliberately does **not** do the following. A passing test suite says nothing
+about them, and it is not evidence of conformance with AISVS, NIST AI RMF, or any other
+standard. [COVERAGE.md](COVERAGE.md) shows what the tests do exercise, and
+[CROSSWALK.md](CROSSWALK.md) shows, requirement by requirement, what is met, partly met,
+or not addressed.
+
+- **Not a sandbox.** Once an action runs, Brakepoint has no further control over it. It
+  does not isolate processes, filesystems, or networks.
+- **Not program analysis.** It sees the command line, not the program. A script the agent
+  writes and then runs, and the content of files it writes, are not inspected.
+- **Not a prompt-injection filter.** It does not screen what the model reads (web pages,
+  emails, tool results). It checks what the model then tries to do.
+- **Not an allow-list.** The default is a catalog of known-dangerous actions
+  (`unmatched: allow`). Unknown dangerous actions pass unless you set `unmatched: approve`.
+- **Not output safety.** Toxicity, PII in responses, and similar content concerns are out
+  of scope.
+- **Not agent identity.** No per-agent cryptographic identity, signed approvals, or
+  single-use approval nonces (AISVS C9.2.8, C9.4.1).
+- **Not budgets or a kill switch.** No rate limits, spend limits, recursion limits, or
+  emergency stop (AISVS C9.1, C9.6.1).
+- **Not data-loss prevention.** Data sent out through an allowed channel (for example an
+  HTTP POST to an unlisted host) is not detected.
+- **Not tamper-proof logging.** The audit log is tamper-evident. A party who can rewrite
+  the whole file can rebuild a valid chain; ship entries to a store the agent cannot write.
+- **Not a defence against the approver.** A human who approves a harmful action, or an
+  attacker with the human's own access, is outside the model.
+- **Only these integration points:** the Claude Code `PreToolUse` hook, the stdio MCP
+  proxy, and `brakepoint exec`. HTTP/SSE MCP transports and other harnesses are not covered.
+
+## The human approver
+
+An approval step is only as strong as the person approving.
+
+- **Approval fatigue.** People asked many times a day start approving by reflex. Reserve
+  live prompts for the highest-impact actions, and let humans set policy and review the
+  rest afterwards. [`examples/low-fatigue.brakepoint.yaml`](../examples/low-fatigue.brakepoint.yaml)
+  prompts only for critical actions and a few high-risk ones, logs the rest, and still
+  denies anything aimed at production. `brakepoint audit review` summarises decisions per
+  rule: a rule that is always approved is a candidate for `log`, one that is always
+  rejected a candidate for `deny`.
+- **Persuasion by the agent.** A compromised or confused agent can write text meant to
+  persuade the approver: a comment saying "already approved by security", a fake line
+  that looks like Brakepoint's own, terminal escape codes that erase the warning, or a
+  harmless first screen with the dangerous part far below. Brakepoint treats all agent
+  text in a prompt as untrusted: every line of it is fenced with a `│` margin and labelled
+  as written by the agent, control and invisible Unicode characters are shown as escapes,
+  long text keeps both its start and end with the hidden length stated, and the exact
+  text that triggered each rule is shown separately. Only the rule, why, and safer lines
+  come from Brakepoint. In Claude Code the harness draws the prompt itself; Brakepoint
+  adds a reminder to judge what the command does, not what text inside it claims.
+- **What is recorded.** In the terminal and queue backends the audit log records the
+  approver and their decision. In Claude Code it records that a human was asked; the
+  answer is given in the harness and is not visible to Brakepoint.
+
 ## Trust boundaries
 
 | Component | Trusted? | Notes |

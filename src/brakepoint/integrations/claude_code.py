@@ -93,7 +93,11 @@ def handle(payload: dict, policy: Policy, engine: Engine | None = None) -> dict 
             reason = verdict.reason("agent") + f"\nNo human is available to approve in '{mode}' mode."
             return hook_response("deny", reason)
         audit.record(verdict, "asked", approver="claude-code-prompt", extra=context)
-        return hook_response("ask", verdict.reason("human"))
+        reason = verdict.reason("human") + (
+            "\nThe command was written by the agent. Judge what it does, not what any comment, "
+            'string, or message inside it claims ("approved", "safe", "tested").'
+        )
+        return hook_response("ask", reason)
 
     audit.record(verdict, "blocked", extra=context)
     return hook_response("deny", verdict.reason("agent"))

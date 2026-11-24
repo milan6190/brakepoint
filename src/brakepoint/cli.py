@@ -182,6 +182,8 @@ def cmd_audit(args) -> int:
         print(("OK: " if ok else "TAMPERED: ") + message)
         return 0 if ok else 1
     lines = list(log.entries() or [])
+    if args.action == "review":
+        return _audit_review([json.loads(line) for _, line in lines], args.since)
     for _, line in lines[-args.n :]:
         e = json.loads(line)
         rules = ",".join(m["rule"] for m in e.get("matches", []))
@@ -208,6 +210,45 @@ def cmd_validate(args) -> int:
     )
     print("  defaults: " + ", ".join(f"{k}={v}" for k, v in policy.defaults.items()))
     print(f"  approval: {policy.approval_backend}, timeout {policy.approval_timeout}s")
+    return 0
+
+
+def _audit_review(entries: list[dict], since: str | None) -> int:
+    """Per-rule summary for a human reviewing decisions after the fact.
+
+    Live prompts are for the highest-impact actions. Everything else is logged and
+    reviewed here, and the approve/reject history shows which prompts are worth keeping.
+    """
+    if since:
+        entries = [e for e in entries if e.get("ts", "") >= since]
+    if not entries:
+        print("Nothing to review.")
+        return 0
+    stats: dict[str, dict[str, int]] = {}
+    examples: dict[str, str] = {}
+    for e in entries:
+        top = (e.get("matches") or [{}])[0].get("rule", "-")
+        stats.setdefault(top, {}).setdefault(e.get("outcome", "?"), 0)
+        stats[top][e.get("outcome", "?")] += 1
+        examples[top] = e.get("action", {}).get("text", "")
+    print(f"{len(entries)} decisions from {entries[0]['ts'][:10]} to {entries[-1]['ts'][:10]}\n")
+    print(f"{'rule':<13} {'allowed':>7} {'asked':>6} {'approved':>8} {'rejected':>8} {'blocked':>7}  advice")
+    for rule, s in sorted(stats.items(), key=lambda kv: -sum(kv[1].values())):
+        prompts = s.get("approved", 0) + s.get("rejected", 0)
+        advice = ""
+        if prompts >= 5 and not s.get("rejected"):
+            advice = "always approved: consider `log` so it stops prompting"
+        elif prompts >= 5 and not s.get("approved"):
+            advice = "always rejected: consider `deny`"
+        elif s.get("allowed"):
+            advice = "ran without a prompt: check the examples below"
+        print(
+            f"{rule:<13} {s.get('allowed', 0):>7} {s.get('asked', 0):>6} {s.get('approved', 0):>8} "
+            f"{s.get('rejected', 0):>8} {s.get('blocked', 0):>7}  {advice}"
+        )
+    print("\nLatest example per rule (written by the agent):")
+    for rule, text in examples.items():
+        print(f"  {rule:<13} {text[:100]!r}")
     return 0
 
 
@@ -307,7 +348,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_catalog)
 
     p = sub.add_parser("audit", parents=[common], help="inspect or verify the audit log")
-    p.add_argument("action", choices=["tail", "verify"])
+    p.add_argument("action", choices=["tail", "verify", "review"])
+    p.add_argument("--since", help="review only entries on or after this ISO date, e.g. 2026-11-01")
     p.add_argument("-n", type=int, default=20)
     p.add_argument("--path")
     p.set_defaults(func=cmd_audit)

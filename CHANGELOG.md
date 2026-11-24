@@ -35,6 +35,11 @@ makes policy loading strict. **Read "Upgrading" first.**
   (`DROP/**/TABLE`) are seen through.
 - `approval.unattended_modes` given as a string was split into characters, which turned
   denials in `bypassPermissions` mode into asks.
+- Approval prompts treat agent-written text as untrusted. Before, a command could forge
+  a line that looked like Brakepoint's own ("SAFE to approve"), use terminal escape codes
+  to erase the warning, or hide its dangerous part after 600 harmless characters. Agent
+  text is now fenced and labelled, hidden characters are shown as escapes, long text
+  keeps both ends, and the text that triggered each rule is shown on its own.
 - Terminal approval ignores keys typed before the prompt appeared, so a stray `yes` cannot
   approve an action nobody has seen.
 - The URL-credential redaction regex and several catalog patterns were quadratic on long
@@ -55,6 +60,16 @@ makes policy loading strict. **Read "Upgrading" first.**
 
 - `brakepoint validate [path]`: load a policy exactly as the hook would and report
   problems.
+- `brakepoint audit review [--since DATE]`: per-rule summary of decisions, flagging rules
+  that are always approved (candidates for `log`) or always rejected (candidates for
+  `deny`).
+- `examples/low-fatigue.brakepoint.yaml`: live prompts only for the highest-impact actions.
+- Rule coverage next to pass/fail: every test run reports which rules no test triggers,
+  CI fails if any (`pytest --require-all-rules`), and `docs/COVERAGE.md` lists them all.
+  Tests were added for the 13 rules that had none.
+- `docs/CROSSWALK.md`: rules and tests mapped to OWASP AISVS 1.01, with NIST SP 800-207
+  and AI RMF in draft. Each requirement is marked met, partial, or not addressed.
+- Threat model: explicit non-goals, and a section on the human approver.
 
 ## 0.1.0
 

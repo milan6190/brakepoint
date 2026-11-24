@@ -20,9 +20,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]" pytest-github-actions-annotate-failures
-      - run: ruff check src tests
-      - run: ruff format --check src tests
-      - run: pytest -q -rfE
+      - run: ruff check src tests conftest.py
+      - run: ruff format --check src tests conftest.py
+      - name: Tests, with rule coverage (every rule needs a test)
+        run: pytest -q -rfE --require-all-rules
       - name: Incident replay
         run: brakepoint replay
       - name: Catalog reference is up to date

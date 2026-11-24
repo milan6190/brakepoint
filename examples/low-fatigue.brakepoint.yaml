@@ -1,0 +1,21 @@
+# Low-fatigue policy: live prompts only for the highest-impact actions.
+#
+# An approval is only as strong as the person giving it. If people are asked
+# twenty times a day they start clicking "yes". Here a human is asked only for
+# critical actions; high-risk ones run but are logged, and someone reviews them
+# afterwards with `brakepoint audit review --since <date>`. Anything aimed at
+# production is still denied outright.
+version: 1
+defaults:
+  critical: approve
+  high: log
+  medium: log
+  unmatched: allow
+protected:
+  markers: [prod, production, prd, live]
+  protected_action: deny
+rules:
+  # High-risk rules that still deserve a live prompt even in this policy.
+  BP-CRED-001: approve   # reading a secret cannot be undone
+  BP-GIT-001: approve    # force push overwrites other people's work
+  BP-EXEC-001: approve   # running a downloaded script

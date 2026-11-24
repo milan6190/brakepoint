@@ -172,7 +172,7 @@ catalogs:
 | `brakepoint mcp-proxy --name N -- <server>` | Guard a stdio MCP server |
 | `brakepoint pending` / `approve <id>` / `deny <id>` | Work the approval queue |
 | `brakepoint catalog [--markdown\|--json]` | List the rules |
-| `brakepoint audit tail\|verify` | Read or verify the audit log |
+| `brakepoint audit tail\|verify\|review` | Read, verify, or review the audit log per rule |
 | `brakepoint replay` | Replay real incidents against your policy |
 | `brakepoint init [--claude-code]` | Write a starter policy and hook |
 | `brakepoint validate [path]` | Check a policy loads; the hook blocks everything while it is invalid |
@@ -184,7 +184,18 @@ see inside a script the agent writes and then runs, and a determined attacker ca
 phrasings no catalog anticipates. It is most valuable when combined with least-privilege
 credentials, network egress controls, and backups the agent cannot reach. Actions longer
 than 16,000 characters are only partly checked, so they always go to a human (BP-SIZE-001).
-See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), including its explicit **non-goals**.
+
+For auditors: [docs/COVERAGE.md](docs/COVERAGE.md) shows which rules the tests exercise, and
+[docs/CROSSWALK.md](docs/CROSSWALK.md) maps rules and tests to OWASP AISVS 1.01 (and, in
+draft, NIST SP 800-207 and AI RMF) with each requirement marked met, partial, or not
+addressed. A passing test suite is not a claim of conformance with any of them.
+
+**Approvals are only as strong as the approver.** To avoid approval fatigue, keep live
+prompts for the highest-impact actions
+([`examples/low-fatigue.brakepoint.yaml`](examples/low-fatigue.brakepoint.yaml)) and review
+the rest with `brakepoint audit review`. Prompts fence everything the agent wrote, since a
+compromised agent can try to talk the approver into saying yes.
 
 ## Roadmap
 

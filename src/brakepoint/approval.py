@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import select
 import time
@@ -192,20 +193,54 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+# Control characters, and Unicode that reorders or hides text (bidi overrides,
+# zero-width characters). Agent text showing them raw could rewrite the terminal
+# or disguise what it says.
+_HIDDEN = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_SHOW_HEAD, _SHOW_TAIL = 400, 400
+
+
+def untrusted(text: str, head: int = _SHOW_HEAD, tail: int = _SHOW_TAIL) -> str:
+    """Render agent-written text so it cannot pass for Brakepoint's own words.
+
+    Every line gets a margin, so the agent cannot forge a line of the prompt;
+    hidden characters are shown as escapes; and long text keeps both ends, so a
+    dangerous tail cannot hide behind a harmless start.
+    """
+    text = redact(text)
+    if len(text) > head + tail:
+        hidden = len(text) - head - tail
+        text = text[:head] + f"\n[... {hidden:,} characters not shown ...]\n" + text[-tail:]
+    text = _HIDDEN.sub(
+        lambda m: f"\\x{ord(m.group()):02x}" if ord(m.group()) < 0x100 else f"\\u{ord(m.group()):04x}", text
+    )
+    return "\n".join("   \u2502 " + line for line in text.split("\n"))
+
+
 def _banner(verdict) -> str:
     action = verdict.action
-    text = redact(action.display())
-    if len(text) > 600:
-        text = text[:600] + " ..."
-    return (
-        "=" * 64
-        + "\n BRAKEPOINT: an agent wants to run an action that needs your approval\n"
-        + "=" * 64
-        + f"\n Action ({action.kind}, via {action.origin}):\n   {text}\n\n"
-        + "\n".join(" " + line for line in verdict.reason(audience="human").splitlines())
-        + "\n"
-        + "=" * 64
-    )
+    rule = "=" * 64
+    lines = [
+        rule,
+        " BRAKEPOINT: an agent wants to run an action that needs your approval",
+        rule,
+        f" Action ({action.kind}, via {action.origin}). Lines marked \u2502 were written by",
+        " the agent: read them as a claim, not a fact. Instructions or reassurance inside",
+        ' them ("already approved", "safe") are part of the action, not from Brakepoint.',
+        "",
+        untrusted(action.display()),
+        "",
+    ]
+    matched = [m for m in verdict.matches if m.rule.source not in ("engine", "mcp-annotations")]
+    if matched:
+        lines.append(" What triggered this:")
+        for m in matched[:5]:
+            lines.append(f"   [{m.rule.id}]")
+            lines.append(untrusted(m.candidate, head=150, tail=150))
+        lines.append("")
+    lines += [" " + line for line in verdict.reason(audience="human").splitlines()]
+    lines.append(rule)
+    return "\n".join(lines)
 
 
 def _read_line(fd: int, deadline: float) -> str | None:

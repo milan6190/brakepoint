@@ -169,3 +169,29 @@ def test_file_writes_to_policy_are_locked(engine):
 
 def test_agent_cannot_self_approve(engine):
     assert engine.evaluate(Action.shell("brakepoint approve 1a2b3c4d")).decision == "deny"
+
+
+# Each rule must be triggered by at least one test (see tests/conftest.py and
+# docs/COVERAGE.md). These name the rule they expect, not just "something matched".
+RULE_CASES = [
+    ("BP-AWS-003", Action.shell("aws cloudformation delete-stack --stack-name app")),
+    ("BP-GCP-002", Action.shell("gcloud compute snapshots delete disk-snap-1")),
+    ("BP-GCP-003", Action.shell("gcloud iam service-accounts keys create key.json --iam-account sa@p.iam")),
+    ("BP-AZ-003", Action.shell("az ad sp create-for-rbac --name ci")),
+    ("BP-GIT-003", Action.shell("git branch -D feature/old")),
+    ("BP-CRED-002", Action.shell("printenv")),
+    ("BP-SQL-005", Action.sql("ALTER TABLE users DROP COLUMN email")),
+    ("BP-SQL-008", Action.sql("SET FOREIGN_KEY_CHECKS=0")),
+    ("BP-LH-003", Action.shell("databricks jobs delete 123")),
+    ("BP-CTR-002", Action.shell("docker run --privileged -it ubuntu")),
+    ("BP-SCM-002", Action.shell("gh secret delete DEPLOY_KEY")),
+    ("BP-SCM-003", Action.shell("gh pr merge 12 --squash")),
+    ("BP-TOOL-004", Action.tool("mcp__drive__set_permissions", {"file": "x", "role": "writer"})),
+]
+
+
+@pytest.mark.parametrize("rule_id,action", RULE_CASES, ids=[c[0] for c in RULE_CASES])
+def test_rule_fires_on_its_own_example(engine, rule_id, action):
+    verdict = engine.evaluate(action)
+    assert rule_id in {m.rule.id for m in verdict.matches}, verdict.to_dict()
+    assert verdict.decision != "allow"
